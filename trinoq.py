@@ -154,7 +154,7 @@ def execute(query, engine, no_cache=False, quiet=False):
 
     # cache {{
     try:
-        df.to_parquet(temp_file)
+        df.to_parquet(temp_file, engine="pyarrow")
     except Exception as e:
         printer(f"Error caching:\n{e}", quiet=quiet)
     else:

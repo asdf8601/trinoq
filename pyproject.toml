@@ -8,7 +8,7 @@ dynamic = ["version"]
 authors = [{name="Max Greco", email="mmngreco@gmail.com"}]
 readme = "README.md"
 requires-python = ">=3.6"
-dependencies = ["rich", "typer", "pandas", "trino", "google-auth", "fastparquet"]
+dependencies = ["rich", "typer", "pandas", "trino", "google-auth", "pyarrow"]
 
 
 [project.scripts]

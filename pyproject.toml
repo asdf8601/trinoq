@@ -10,6 +10,8 @@ readme = "README.md"
 requires-python = ">=3.6"
 dependencies = ["rich", "typer", "pandas", "trino", "google-auth", "pyarrow"]
 
+[tool.setuptools]
+package-dir = {"" = "src"}
 
 [project.scripts]
 trinoq = "trinoq:app"

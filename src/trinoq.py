@@ -4,15 +4,20 @@ You need to define a TRINO_URL environment variable with the connection string t
 $ export TRINO_URL="https://host:443?user=user@google.com"
 $ trinoq "select 1"
 """
+
 import pandas as pd
 from rich import print as rprint
 import os
+
+from trino.dbapi import Connection
+
 
 def printer(*args, quiet=False, **kwargs):
     if not quiet:
         rprint(*args, **kwargs)
 
-def create_connection():
+
+def create_connection() -> Connection:
     import warnings
     import google.auth
     from google.auth.transport.requests import Request
@@ -59,6 +64,7 @@ def get_query(args):
 
     def find_fmt_keys(s: str) -> list[str] | None:
         import re
+
         pattern = r"{[^}]+}"
         matches = re.findall(pattern, s)
         return matches
@@ -136,8 +142,16 @@ def get_temp_file(query):
     return temp_file
 
 
-def execute(query, engine, no_cache=False, quiet=False):
+def execute(
+    query: str,
+    engine: Connection | None = None,
+    no_cache: bool = False,
+    quiet: bool = False,
+):
     import warnings
+
+    if engine is None:
+        engine = create_connection()
     if no_cache:
         return pd.read_sql(query, engine)
 
@@ -175,8 +189,7 @@ def app():
     printer("In[query]:", quiet=quiet)
     printer(query, quiet=quiet)
 
-    engine = create_connection()
-    df = execute(query, engine, args.no_cache, quiet=quiet)
+    df = execute(query=query, no_cache=args.no_cache, quiet=quiet)
 
     printer(quiet=quiet)
     printer("Out[df]:", quiet=quiet)

@@ -6,7 +6,6 @@ $ trinoq "select 1"
 """
 
 import pandas as pd
-from rich import print as rprint
 import os
 
 from trino.dbapi import Connection
@@ -186,20 +185,15 @@ def app():
     if args.pdb:
         breakpoint()
 
-    printer("In[query]:", quiet=quiet)
-    printer(query, quiet=quiet)
+    printer(f"In[query]:\n{query}", quiet=quiet)
 
     df = execute(query=query, no_cache=args.no_cache, quiet=quiet)
 
-    printer(quiet=quiet)
-    printer("Out[df]:", quiet=quiet)
-    printer(df, quiet=quiet)
+    printer(f"\nOut[df]:\n{df}", quiet=quiet)
 
     if args.eval_df:
         eval_df = get_eval_df(args)
-        printer(quiet=quiet)
-        printer("In[eval]:", quiet=quiet)
-        printer(eval_df, quiet=quiet)
+        printer(f"\nIn[eval]:\n{eval_df}", quiet=quiet)
 
         printer("Out[eval]:", quiet=quiet)
         exec(eval_df, globals(), locals())

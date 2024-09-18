@@ -13,7 +13,7 @@ from trino.dbapi import Connection
 
 def printer(*args, quiet=False, **kwargs):
     if not quiet:
-        rprint(*args, **kwargs)
+        print(*args, **kwargs)
 
 
 def create_connection() -> Connection:

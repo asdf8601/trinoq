@@ -141,18 +141,24 @@ def get_temp_file(query):
     return temp_file
 
 
+def read_sql(*args, **kwargs):
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return pd.read_sql(*args, **kwargs)
+
+
 def execute(
     query: str,
     engine: Connection | None = None,
     no_cache: bool = False,
     quiet: bool = False,
 ):
-    import warnings
 
     if engine is None:
         engine = create_connection()
     if no_cache:
-        return pd.read_sql(query, engine)
+        return read_sql(query, engine)
 
     # cache {{
     temp_file = get_temp_file(query)
@@ -161,9 +167,7 @@ def execute(
         return pd.read_parquet(temp_file)
     # }}
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        df = pd.read_sql(query, engine)
+    df = read_sql(query, engine)
 
     # cache {{
     try:

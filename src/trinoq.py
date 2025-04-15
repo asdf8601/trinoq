@@ -151,8 +151,8 @@ def read_sql(*args, **kwargs):
 def execute(
     query: str,
     engine: Connection | None = None,
-    no_cache: bool = False,
-    quiet: bool = False,
+    no_cache: bool = True,
+    quiet: bool = True,
 ):
 
     if engine is None:

@@ -31,3 +31,4 @@ trinoq --help
 trinoq <query>
 trinoq "select 1"
 ```
+

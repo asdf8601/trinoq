@@ -1,7 +1,7 @@
 """
 You need to define a TRINO_URL environment variable with the connection string to the trino server.
 
-$ export TRINO_URL="https://host:443?user=user@google.com"
+$ export TRINO_URL="https://host:443"
 $ trinoq "select 1"
 """
 
@@ -35,7 +35,7 @@ def create_connection() -> Connection:
     http_scheme = parsed_url.scheme
 
     params = parse_qs(parsed_url.query)
-    user = params["user"][0]
+    user = params.get("user", None)
     catalog = params.get("catalog", [None])[0]
     schema = params.get("schema", [None])[0]
 

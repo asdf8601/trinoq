@@ -193,7 +193,7 @@ def app():
 
     df = execute(query=query, no_cache=args.no_cache, quiet=quiet)
 
-    printer(f"\nOut[df]:\n{df}", quiet=quiet)
+    printer(f"\nOut[df]:\n{df.to_string()}", quiet=quiet)
 
     if args.eval_df:
         eval_df = get_eval_df(args)

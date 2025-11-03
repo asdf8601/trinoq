@@ -2,7 +2,11 @@
 You need to define a TRINO_URL environment variable with the connection string to the trino server.
 
 $ export TRINO_URL="https://host:443"
-$ trinoq "select 1"
+
+Usage:
+$ trinoq "select 1"              # Direct query string
+$ trinoq -f query.sql            # Read from file
+$ echo "select 1" | trinoq -     # Read from stdin
 """
 
 import pandas as pd
@@ -69,10 +73,17 @@ def get_query(args):
         return matches
 
     query_in = args.query
-    try:
+    
+    # Read from stdin if query is "-"
+    if query_in == "-":
+        import sys
+        out = sys.stdin.read()
+    # Read from file if --file flag is set
+    elif args.file:
         with open(query_in, "r") as f:
             out = f.read()
-    except FileNotFoundError:
+    # Otherwise treat as query string
+    else:
         out = query_in
 
     # format {{{
@@ -91,7 +102,13 @@ def get_args():
     import argparse
 
     parser = argparse.ArgumentParser(description="Query")
-    parser.add_argument("query", help="query or filename with query")
+    parser.add_argument("query", help="SQL query string, or use '-' for stdin, or use with -f for file")
+    parser.add_argument(
+        "-f",
+        "--file",
+        help="Read query from file",
+        action="store_true",
+    )
     parser.add_argument(
         "-n",
         "--no-cache",

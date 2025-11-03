@@ -67,6 +67,21 @@ Execute Python code on the resulting DataFrame using the `-e` or `--eval-df` fla
 trinoq "select * from my_table" -e "print(df.describe())"
 ```
 
+You can also specify the eval file directly in your SQL query using a comment:
+
+```sql
+-- eval: analysis.py
+select * from my_table
+```
+
+Then run:
+
+```bash
+trinoq -f query.sql
+```
+
+This allows you to keep your query and analysis code together in a single file.
+
 ### Quiet Mode
 
 Suppress informational output (useful for piping results):

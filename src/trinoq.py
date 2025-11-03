@@ -63,6 +63,17 @@ def create_connection() -> Connection:
     return conn
 
 
+def extract_eval_file(query: str) -> str | None:
+    """Extract eval file path from SQL comment like '-- eval: file.py'"""
+    import re
+    
+    pattern = r"--\s*eval:\s*(.+?)(?:\n|$)"
+    match = re.search(pattern, query, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
 def get_query(args):
 
     def find_fmt_keys(s: str) -> list[str] | None:
@@ -205,6 +216,11 @@ def app():
 
     if args.pdb:
         breakpoint()
+
+    # Check for eval file in SQL comment
+    eval_file_from_query = extract_eval_file(query)
+    if eval_file_from_query and not args.eval_df:
+        args.eval_df = eval_file_from_query
 
     printer(f"In[query]:\n{query}", quiet=quiet)
 

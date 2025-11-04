@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov"]
+noti = ["noti"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

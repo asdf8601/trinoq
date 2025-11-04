@@ -164,6 +164,20 @@ def get_query(args):
     return out
 
 
+def send_notification(title: str, message: str) -> bool:
+    """Send desktop notification using noti package if available"""
+    try:
+        import noti
+        noti.notify(title=title, message=message)
+        return True
+    except ImportError:
+        print("Warning: 'noti' package not installed. Install with: pip install trinoq[noti]")
+        return False
+    except Exception as e:
+        print(f"Warning: Failed to send notification: {e}")
+        return False
+
+
 def get_args():
     import argparse
 
@@ -186,6 +200,7 @@ Examples:
   echo "SELECT 1" | trinoq -               # Read from stdin
   trinoq --dry-run -f query.sql            # Preview rendered query
   trinoq -t -o json "SELECT * FROM table"  # Time and export to JSON
+  trinoq --noti "SELECT * FROM big_table"  # Send notification when query completes
 """
 
     parser = argparse.ArgumentParser(
@@ -241,6 +256,11 @@ Examples:
         help="Output format: json, csv, or parquet",
         choices=["json", "csv", "parquet"],
         default=None,
+    )
+    parser.add_argument(
+        "--noti",
+        help="Send notification when query completes (requires 'noti' package)",
+        action="store_true",
     )
     return parser.parse_args()
 
@@ -341,31 +361,52 @@ def app():
     # Measure execution time if --timing flag is set
     start_time = time.time()
     
-    df = execute(query=query, no_cache=args.no_cache, quiet=quiet)
-    
-    if args.timing:
+    try:
+        df = execute(query=query, no_cache=args.no_cache, quiet=quiet)
+        
+        # Calculate elapsed time
         elapsed_time = time.time() - start_time
-        printer(f"\nExecution time: {elapsed_time:.3f}s", quiet=quiet)
+        
+        if args.timing:
+            printer(f"\nExecution time: {elapsed_time:.3f}s", quiet=quiet)
 
-    # Handle output formats
-    if args.output:
-        if args.output == "json":
-            print(df.to_json(orient="records", indent=2))
-        elif args.output == "csv":
-            print(df.to_csv(index=False))
-        elif args.output == "parquet":
-            output_file = "output.parquet"
-            df.to_parquet(output_file, engine="pyarrow")
-            printer(f"\nSaved to: {output_file}", quiet=False)
-    else:
-        printer(f"\nOut[df]:\n{df.to_string()}", quiet=quiet)
+        # Send notification if requested
+        if args.noti:
+            rows = len(df)
+            send_notification(
+                title="TrinoQ Query Complete",
+                message=f"Query finished in {elapsed_time:.2f}s\nReturned {rows} rows"
+            )
 
-    if args.eval_df:
-        eval_df = get_eval_df(args)
-        printer(f"\nIn[eval]:\n{eval_df}", quiet=quiet)
+        # Handle output formats
+        if args.output:
+            if args.output == "json":
+                print(df.to_json(orient="records", indent=2))
+            elif args.output == "csv":
+                print(df.to_csv(index=False))
+            elif args.output == "parquet":
+                output_file = "output.parquet"
+                df.to_parquet(output_file, engine="pyarrow")
+                printer(f"\nSaved to: {output_file}", quiet=False)
+        else:
+            printer(f"\nOut[df]:\n{df.to_string()}", quiet=quiet)
 
-        printer("Out[eval]:", quiet=quiet)
-        exec(eval_df, globals(), locals())
+        if args.eval_df:
+            eval_df = get_eval_df(args)
+            printer(f"\nIn[eval]:\n{eval_df}", quiet=quiet)
+
+            printer("Out[eval]:", quiet=quiet)
+            exec(eval_df, globals(), locals())
+            
+    except Exception as e:
+        # Send error notification if requested
+        if args.noti:
+            elapsed_time = time.time() - start_time
+            send_notification(
+                title="TrinoQ Query Failed",
+                message=f"Query failed after {elapsed_time:.2f}s\nError: {str(e)[:100]}"
+            )
+        raise
 
 
 if __name__ == "__main__":

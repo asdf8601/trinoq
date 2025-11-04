@@ -288,6 +288,7 @@ class TestCLIOptions:
         args.query = "SELECT 1"
         args.file = False
         args.pdb = False
+        args.noti = False
         mock_get_args.return_value = args
         mock_get_query.return_value = "SELECT 1"
         
@@ -314,6 +315,7 @@ class TestCLIOptions:
         args.eval_df = None
         args.no_cache = True
         args.pdb = False
+        args.noti = False
         mock_get_args.return_value = args
         mock_get_query.return_value = "SELECT 1"
         
@@ -345,6 +347,7 @@ class TestCLIOptions:
         args.eval_df = None
         args.no_cache = True
         args.pdb = False
+        args.noti = False
         mock_get_args.return_value = args
         mock_get_query.return_value = "SELECT 1"
         
@@ -376,6 +379,7 @@ class TestCLIOptions:
         args.eval_df = None
         args.no_cache = True
         args.pdb = False
+        args.noti = False
         mock_get_args.return_value = args
         mock_get_query.return_value = "SELECT 1"
         
@@ -389,6 +393,46 @@ class TestCLIOptions:
             output = mock_stdout.getvalue()
             # Should contain CSV output with header
             assert "col" in output or output == ""
+
+    @patch('trinoq.send_notification')
+    @patch('trinoq.execute')
+    @patch('trinoq.get_args')
+    @patch('trinoq.get_query')
+    def test_noti_flag(self, mock_get_query, mock_get_args, mock_execute, mock_send_notification):
+        """Test that --noti sends notification when query completes."""
+        from trinoq import app
+        import pandas as pd
+        
+        # Mock args
+        args = Mock()
+        args.dry_run = False
+        args.timing = False
+        args.output = None
+        args.quiet = True
+        args.eval_df = None
+        args.no_cache = True
+        args.pdb = False
+        args.noti = True
+        mock_get_args.return_value = args
+        mock_get_query.return_value = "SELECT 1"
+        
+        # Mock execute to return a dataframe
+        mock_df = pd.DataFrame({"col": [1, 2, 3]})
+        mock_execute.return_value = mock_df
+        
+        # Mock send_notification to return True
+        mock_send_notification.return_value = True
+        
+        # Run app
+        app()
+        
+        # Verify notification was called
+        assert mock_send_notification.called
+        call_args = mock_send_notification.call_args
+        assert call_args[1]["title"] == "TrinoQ Query Complete"
+        assert "Query finished in" in call_args[1]["message"]
+        assert "3 rows" in call_args[1]["message"]
+
 
 
 if __name__ == "__main__":

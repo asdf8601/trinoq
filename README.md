@@ -14,11 +14,15 @@ A convenient CLI tool to query data from Trino with built-in caching and Google 
 - Dry-run mode to preview rendered queries
 - Query execution timing
 - Export results to JSON, CSV, or Parquet formats
+- Desktop notifications when queries complete (optional)
 
 ## Installation
 
 ```bash
 uv tool install git+https://github.com/mmngreco/trinoq
+
+# Optional: Install with notification support
+uv tool install git+https://github.com/mmngreco/trinoq --with noti
 ```
 
 ## Configuration
@@ -164,6 +168,31 @@ trinoq -o parquet "select * from my_table"
 # Creates: output.parquet
 ```
 
+### Desktop Notifications
+
+Get notified when long-running queries complete:
+
+```bash
+trinoq --noti "select * from large_table"
+```
+
+This will send a desktop notification with:
+- Query completion status (success or failure)
+- Execution time
+- Number of rows returned (on success)
+- Error message (on failure)
+
+**Requirements:**
+- Install with: `pip install trinoq[noti]` or `uv tool install trinoq --with noti`
+- The `noti` package must be installed for this feature to work
+- If not installed, a warning will be displayed but the query will still execute
+
+**Combining with other flags:**
+```bash
+trinoq --noti -t -o csv "select * from huge_table" > results.csv
+# Get notification + timing + export to CSV
+```
+
 ### Disable Cache
 
 By default, query results are cached in `/tmp/druidq/`. To disable caching:
@@ -253,7 +282,7 @@ trinoq -t -f analysis.sql         # Then execute
 ## Command-Line Reference
 
 ```
-trinoq [-h] [-f] [-n] [-q] [-e EVAL_DF] [-t] [-o {json,csv,parquet}] [--dry-run] [--pdb] query
+trinoq [-h] [-f] [-n] [-q] [-e EVAL_DF] [-t] [-o {json,csv,parquet}] [--dry-run] [--noti] [--pdb] query
 ```
 
 ### Positional Arguments
@@ -303,6 +332,13 @@ trinoq [-h] [-f] [-n] [-q] [-e EVAL_DF] [-t] [-o {json,csv,parquet}] [--dry-run]
 - Useful for debugging parameter substitution and template rendering
 - Displays the final SQL after all `@param` and environment variable substitutions
 
+
+**`--noti`**
+- Send desktop notification when query completes
+- Displays execution time and row count (on success) or error message (on failure)
+- Requires the `noti` package: install with `pip install trinoq[noti]`
+- Useful for long-running queries
+
 **`--pdb`**
 - Start Python debugger (pdb) on start
 - For development/debugging purposes
@@ -349,6 +385,9 @@ See [tests/README.md](tests/README.md) for more details.
 - trino
 - google-auth
 - pyarrow
+
+### Optional
+- noti (for desktop notifications with `--noti` flag)
 
 ### Development
 - pytest>=7.0

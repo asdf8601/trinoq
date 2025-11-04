@@ -7,8 +7,13 @@ name = "trinoq"
 dynamic = ["version"]
 authors = [{name="Max Greco", email="mmngreco@gmail.com"}]
 readme = "README.md"
-requires-python = ">=3.6"
-dependencies = ["pandas", "trino", "google-auth", "pyarrow"]
+requires-python = ">=3.9"
+dependencies = [
+    "pandas>=1.3.0",
+    "trino>=0.300.0",
+    "google-auth>=2.0.0",
+    "pyarrow>=7.0.0",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov"]

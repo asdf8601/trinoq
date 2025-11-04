@@ -301,4 +301,4 @@ See [tests/README.md](tests/README.md) for more details.
 - pytest>=7.0
 - pytest-cov
 
-Requires Python >=3.6
+Requires Python >=3.9

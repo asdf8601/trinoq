@@ -254,23 +254,76 @@ trinoq -t -f analysis.sql         # Then execute
 
 ```
 trinoq [-h] [-f] [-n] [-q] [-e EVAL_DF] [-t] [-o {json,csv,parquet}] [--dry-run] [--pdb] query
-
-positional arguments:
-  query                 SQL query string, or use '-' for stdin, or use with -f for file
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -f, --file            Read query from file
-  -n, --no-cache        Do not use cache
-  -q, --quiet           Do not print the output except the code you use in eval-df
-  -e EVAL_DF, --eval-df EVAL_DF
-                        Evaluate 'df' using string or filename
-  -t, --timing          Measure and display query execution time
-  -o {json,csv,parquet}, --output {json,csv,parquet}
-                        Output format: json, csv, or parquet
-  --dry-run             Show rendered query without executing it
-  --pdb                 Run pdb on start
 ```
+
+### Positional Arguments
+
+**`query`**
+- SQL query string, or use `-` for stdin, or use with `-f` for file
+- Supports SQL annotations (see Query Annotations section)
+
+### Optional Arguments
+
+**`-h, --help`**
+- Show help message and exit
+
+**`-f, --file`**
+- Read query from file
+- When used, the `query` argument is treated as a file path
+- Example: `trinoq -f query.sql`
+
+**`-n, --no-cache`**
+- Do not use query result cache
+- By default, results are cached in `/tmp/druidq/` using Parquet format
+- Use this flag to force fresh query execution
+
+**`-q, --quiet`**
+- Suppress informational output except for eval-df code output
+- Useful for piping results or in scripts
+
+**`-e EVAL_DF, --eval-df EVAL_DF`**
+- Evaluate Python code on the result DataFrame
+- Can be inline code or a file path
+- The DataFrame is available as `df` variable
+- Example: `trinoq "SELECT * FROM table" -e "print(df.describe())"`
+- Note: Can also be specified in SQL using `@eval` or `@eval-file` annotations
+
+**`-t, --timing`**
+- Measure and display query execution time
+- Outputs: `Execution time: X.XXXs`
+
+**`-o {json,csv,parquet}, --output {json,csv,parquet}`**
+- Export results in specified format
+- `json`: Output to stdout in JSON format
+- `csv`: Output to stdout in CSV format  
+- `parquet`: Save to `output.parquet` file
+
+**`--dry-run`**
+- Show rendered query without executing it
+- Useful for debugging parameter substitution and template rendering
+- Displays the final SQL after all `@param` and environment variable substitutions
+
+**`--pdb`**
+- Start Python debugger (pdb) on start
+- For development/debugging purposes
+
+### SQL Annotations
+
+These annotations can be embedded in SQL comments within your query files:
+
+**`-- @param <key> <value>`**
+- Define parameters for query substitution
+- Use `{key}` or `{{key}}` in your SQL to reference the parameter
+- Example: `-- @param table_name my_table`
+
+**`-- @eval <python_code>`**
+- Execute inline Python code on the result DataFrame
+- Example: `-- @eval print(df.head())`
+
+**`-- @eval-file <file_path>`**
+- Execute Python code from a file on the result DataFrame
+- Example: `-- @eval-file analysis.py`
+- Legacy syntax also supported: `-- eval: analysis.py`
 
 ## Development
 

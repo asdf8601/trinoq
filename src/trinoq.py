@@ -63,10 +63,40 @@ def create_connection() -> Connection:
     return conn
 
 
-def extract_eval_file(query: str) -> str | None:
-    """Extract eval file path from SQL comment like '-- eval: file.py'"""
+def extract_params(query: str) -> dict[str, str]:
+    """Extract parameters from SQL comments like '-- @param key value'"""
     import re
     
+    pattern = r"--\s*@param\s+(\S+)\s+(.+?)(?:\n|$)"
+    matches = re.findall(pattern, query, re.IGNORECASE | re.MULTILINE)
+    params = {}
+    for key, value in matches:
+        params[key] = value.strip()
+    return params
+
+
+def extract_eval_code(query: str) -> str | None:
+    """Extract eval code from SQL comment like '-- @eval code'"""
+    import re
+    
+    pattern = r"--\s*@eval\s+(.+?)(?:\n|$)"
+    match = re.search(pattern, query, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def extract_eval_file(query: str) -> str | None:
+    """Extract eval file path from SQL comment like '-- @eval-file file.py' or '-- eval: file.py'"""
+    import re
+    
+    # Try new syntax first: -- @eval-file file.py
+    pattern = r"--\s*@eval-file\s+(.+?)(?:\n|$)"
+    match = re.search(pattern, query, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    
+    # Fall back to old syntax: -- eval: file.py
     pattern = r"--\s*eval:\s*(.+?)(?:\n|$)"
     match = re.search(pattern, query, re.IGNORECASE)
     if match:
@@ -75,13 +105,7 @@ def extract_eval_file(query: str) -> str | None:
 
 
 def get_query(args):
-
-    def find_fmt_keys(s: str) -> list[str] | None:
-        import re
-
-        pattern = r"{[^}]+}"
-        matches = re.findall(pattern, s)
-        return matches
+    import re
 
     query_in = args.query
     
@@ -97,13 +121,44 @@ def get_query(args):
     else:
         out = query_in
 
+    # Extract @param values from query
+    params = extract_params(out)
+    
     # format {{{
-    fmt_keys = find_fmt_keys(out)
-    if fmt_keys:
+    # First check for double braces {{key}}
+    pattern_double = r"{{([^}]+)}}"
+    matches_double = re.findall(pattern_double, out)
+    
+    # Then check for single braces {key} (only if no double braces found)
+    pattern_single = r"(?<!\{){([^}]+)}(?!\})"
+    matches_single = re.findall(pattern_single, out) if not matches_double else []
+    
+    if matches_double:
+        # Handle double braces {{key}}
         fmt_values = {}
-        for key in fmt_keys:
-            k = key[1:-1]
-            fmt_values[k] = os.environ[k]
+        for k in matches_double:
+            k = k.strip()
+            # Try params first, then environment variables
+            if k in params:
+                fmt_values[k] = params[k]
+            else:
+                fmt_values[k] = os.environ[k]
+        
+        # Replace {{key}} with values
+        for key, value in fmt_values.items():
+            out = re.sub(r'{{\s*' + re.escape(key) + r'\s*}}', value, out)
+    
+    elif matches_single:
+        # Handle single braces {key}
+        fmt_values = {}
+        for k in matches_single:
+            # Try params first, then environment variables
+            if k in params:
+                fmt_values[k] = params[k]
+            else:
+                fmt_values[k] = os.environ[k]
+        
+        # Use standard format for single braces
         out = out.format(**fmt_values)
     # }}}
     return out
@@ -143,6 +198,24 @@ def get_args():
         "--pdb",
         help="Run pdb on start",
         action="store_true",
+    )
+    parser.add_argument(
+        "--dry-run",
+        help="Show rendered query without executing it",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-t",
+        "--timing",
+        help="Measure and display query execution time",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Output format: json, csv, or parquet",
+        choices=["json", "csv", "parquet"],
+        default=None,
     )
     return parser.parse_args()
 
@@ -210,6 +283,9 @@ def execute(
 
 
 def app():
+    import sys
+    import time
+    
     args = get_args()
     query = get_query(args)
     quiet = args.quiet
@@ -217,16 +293,47 @@ def app():
     if args.pdb:
         breakpoint()
 
+    # Handle --dry-run flag
+    if args.dry_run:
+        print(query)
+        return
+
+    # Check for eval code in SQL comment (new syntax)
+    eval_code_from_query = extract_eval_code(query)
+    
     # Check for eval file in SQL comment
     eval_file_from_query = extract_eval_file(query)
-    if eval_file_from_query and not args.eval_df:
-        args.eval_df = eval_file_from_query
+    
+    # Priority: CLI flag > @eval > @eval-file
+    if not args.eval_df:
+        if eval_code_from_query:
+            args.eval_df = eval_code_from_query
+        elif eval_file_from_query:
+            args.eval_df = eval_file_from_query
 
     printer(f"In[query]:\n{query}", quiet=quiet)
 
+    # Measure execution time if --timing flag is set
+    start_time = time.time()
+    
     df = execute(query=query, no_cache=args.no_cache, quiet=quiet)
+    
+    if args.timing:
+        elapsed_time = time.time() - start_time
+        printer(f"\nExecution time: {elapsed_time:.3f}s", quiet=quiet)
 
-    printer(f"\nOut[df]:\n{df.to_string()}", quiet=quiet)
+    # Handle output formats
+    if args.output:
+        if args.output == "json":
+            print(df.to_json(orient="records", indent=2))
+        elif args.output == "csv":
+            print(df.to_csv(index=False))
+        elif args.output == "parquet":
+            output_file = "output.parquet"
+            df.to_parquet(output_file, engine="pyarrow")
+            printer(f"\nSaved to: {output_file}", quiet=False)
+    else:
+        printer(f"\nOut[df]:\n{df.to_string()}", quiet=quiet)
 
     if args.eval_df:
         eval_df = get_eval_df(args)

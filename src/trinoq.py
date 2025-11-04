@@ -167,7 +167,32 @@ def get_query(args):
 def get_args():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Query")
+    epilog_text = """
+SQL Annotations (embed in SQL comments):
+  -- @param <key> <value>     Define parameters for query substitution
+                              Use {key} or {{key}} in SQL to reference
+                              Example: -- @param table_name my_table
+
+  -- @eval <python_code>      Execute inline Python code on result DataFrame
+                              Example: -- @eval print(df.head())
+
+  -- @eval-file <file_path>   Execute Python code from file on result DataFrame
+                              Example: -- @eval-file analysis.py
+                              Legacy: -- eval: analysis.py
+
+Examples:
+  trinoq "SELECT 1"                        # Direct query
+  trinoq -f query.sql                      # Read from file
+  echo "SELECT 1" | trinoq -               # Read from stdin
+  trinoq --dry-run -f query.sql            # Preview rendered query
+  trinoq -t -o json "SELECT * FROM table"  # Time and export to JSON
+"""
+
+    parser = argparse.ArgumentParser(
+        description="Query Trino database with built-in caching and parameter support",
+        epilog=epilog_text,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("query", help="SQL query string, or use '-' for stdin, or use with -f for file")
     parser.add_argument(
         "-f",

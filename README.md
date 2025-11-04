@@ -20,9 +20,6 @@ A convenient CLI tool to query data from Trino with built-in caching and Google 
 
 ```bash
 uv tool install git+https://github.com/mmngreco/trinoq
-
-# Optional: Install with notification support
-uv tool install git+https://github.com/mmngreco/trinoq --with noti
 ```
 
 ## Configuration
@@ -183,9 +180,19 @@ This will send a desktop notification with:
 - Error message (on failure)
 
 **Requirements:**
-- Install with: `pip install trinoq[noti]` or `uv tool install trinoq --with noti`
-- The `noti` package must be installed for this feature to work
-- If not installed, a warning will be displayed but the query will still execute
+
+To enable desktop notifications, install [noti](https://github.com/variadico/noti):
+
+```bash
+# macOS
+brew install noti
+
+# Linux (download from releases)
+# https://github.com/variadico/noti/releases
+```
+
+> [!NOTE]
+> If you are on macOS and encounter issues, consider creating a new virtual environment.
 
 **Combining with other flags:**
 ```bash
@@ -336,7 +343,7 @@ trinoq [-h] [-f] [-n] [-q] [-e EVAL_DF] [-t] [-o {json,csv,parquet}] [--dry-run]
 **`--noti`**
 - Send desktop notification when query completes
 - Displays execution time and row count (on success) or error message (on failure)
-- Requires the `noti` package: install with `pip install trinoq[noti]`
+- Requires the [noti](https://github.com/variadico/noti) CLI tool (install with `brew install noti` on macOS)
 - Useful for long-running queries
 
 **`--pdb`**
@@ -387,7 +394,7 @@ See [tests/README.md](tests/README.md) for more details.
 - pyarrow
 
 ### Optional
-- noti (for desktop notifications with `--noti` flag)
+- [noti](https://github.com/variadico/noti) CLI tool (for desktop notifications with `--noti` flag)
 
 ### Development
 - pytest>=7.0

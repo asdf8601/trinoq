@@ -165,13 +165,39 @@ def get_query(args):
 
 
 def send_notification(title: str, message: str) -> bool:
-    """Send desktop notification using noti package if available"""
+    """Send desktop notification using noti CLI if available"""
+    import subprocess
+    import shutil
+    
+    # Check for noti CLI in common locations (prefer system noti over venv)
+    noti_path = None
+    for path in ['/opt/homebrew/bin/noti', '/usr/local/bin/noti']:
+        if os.path.exists(path):
+            noti_path = path
+            break
+    
+    # Fallback to PATH search
+    if not noti_path:
+        noti_path = shutil.which('noti')
+    
+    if not noti_path:
+        print("Warning: 'noti' command not found. Install from: https://github.com/variadico/noti")
+        return False
+    
     try:
-        import noti
-        noti.notify(title=title, message=message)
+        # Use noti with -t for title and -m for message
+        result = subprocess.run(
+            [noti_path, '-t', title, '-m', message],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode != 0:
+            print(f"Warning: noti command failed: {result.stderr}")
+            return False
         return True
-    except ImportError:
-        print("Warning: 'noti' package not installed. Install with: pip install trinoq[noti]")
+    except subprocess.TimeoutExpired:
+        print("Warning: noti command timed out")
         return False
     except Exception as e:
         print(f"Warning: Failed to send notification: {e}")

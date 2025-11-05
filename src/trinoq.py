@@ -1,5 +1,5 @@
-"""
-You need to define a TRINO_URL environment variable with the connection string to the trino server.
+"""You need to define a TRINO_URL environment variable with the connection
+string to the trino server.
 
 $ export TRINO_URL="https://host:443"
 
@@ -64,9 +64,9 @@ def create_connection() -> Connection:
 
 
 def extract_params(query: str) -> dict[str, str]:
-    """Extract parameters from SQL comments like '-- @param key value'"""
+    """Extract parameters from SQL comments like '-- @param key value'."""
     import re
-    
+
     pattern = r"--\s*@param\s+(\S+)\s+(.+?)(?:\n|$)"
     matches = re.findall(pattern, query, re.IGNORECASE | re.MULTILINE)
     params = {}
@@ -76,9 +76,9 @@ def extract_params(query: str) -> dict[str, str]:
 
 
 def extract_eval_code(query: str) -> str | None:
-    """Extract eval code from SQL comment like '-- @eval code'"""
+    """Extract eval code from SQL comment like '-- @eval code'."""
     import re
-    
+
     pattern = r"--\s*@eval\s+(.+?)(?:\n|$)"
     match = re.search(pattern, query, re.IGNORECASE)
     if match:
@@ -87,15 +87,16 @@ def extract_eval_code(query: str) -> str | None:
 
 
 def extract_eval_file(query: str) -> str | None:
-    """Extract eval file path from SQL comment like '-- @eval-file file.py' or '-- eval: file.py'"""
+    """Extract eval file path from SQL comment like '-- @eval-file file.py' or
+    '-- eval: file.py'."""
     import re
-    
+
     # Try new syntax first: -- @eval-file file.py
     pattern = r"--\s*@eval-file\s+(.+?)(?:\n|$)"
     match = re.search(pattern, query, re.IGNORECASE)
     if match:
         return match.group(1).strip()
-    
+
     # Fall back to old syntax: -- eval: file.py
     pattern = r"--\s*eval:\s*(.+?)(?:\n|$)"
     match = re.search(pattern, query, re.IGNORECASE)
@@ -108,10 +109,11 @@ def get_query(args):
     import re
 
     query_in = args.query
-    
+
     # Read from stdin if query is "-"
     if query_in == "-":
         import sys
+
         out = sys.stdin.read()
     # Read from file if --file flag is set
     elif args.file:
@@ -123,16 +125,16 @@ def get_query(args):
 
     # Extract @param values from query
     params = extract_params(out)
-    
+
     # format {{{
     # First check for double braces {{key}}
     pattern_double = r"{{([^}]+)}}"
     matches_double = re.findall(pattern_double, out)
-    
+
     # Then check for single braces {key} (only if no double braces found)
     pattern_single = r"(?<!\{){([^}]+)}(?!\})"
     matches_single = re.findall(pattern_single, out) if not matches_double else []
-    
+
     if matches_double:
         # Handle double braces {{key}}
         fmt_values = {}
@@ -143,11 +145,11 @@ def get_query(args):
                 fmt_values[k] = params[k]
             else:
                 fmt_values[k] = os.environ[k]
-        
+
         # Replace {{key}} with values
         for key, value in fmt_values.items():
-            out = re.sub(r'{{\s*' + re.escape(key) + r'\s*}}', value, out)
-    
+            out = re.sub(r"{{\s*" + re.escape(key) + r"\s*}}", value, out)
+
     elif matches_single:
         # Handle single braces {key}
         fmt_values = {}
@@ -157,7 +159,7 @@ def get_query(args):
                 fmt_values[k] = params[k]
             else:
                 fmt_values[k] = os.environ[k]
-        
+
         # Use standard format for single braces
         out = out.format(**fmt_values)
     # }}}
@@ -165,32 +167,34 @@ def get_query(args):
 
 
 def send_notification(title: str, message: str) -> bool:
-    """Send desktop notification using noti CLI if available"""
+    """Send desktop notification using noti CLI if available."""
     import subprocess
     import shutil
-    
+
     # Check for noti CLI in common locations (prefer system noti over venv)
     noti_path = None
-    for path in ['/opt/homebrew/bin/noti', '/usr/local/bin/noti']:
+    for path in ["/opt/homebrew/bin/noti", "/usr/local/bin/noti"]:
         if os.path.exists(path):
             noti_path = path
             break
-    
+
     # Fallback to PATH search
     if not noti_path:
-        noti_path = shutil.which('noti')
-    
+        noti_path = shutil.which("noti")
+
     if not noti_path:
-        print("Warning: 'noti' command not found. Install from: https://github.com/variadico/noti")
+        print(
+            "Warning: 'noti' command not found. Install from: https://github.com/variadico/noti"
+        )
         return False
-    
+
     try:
         # Use noti with -t for title and -m for message
         result = subprocess.run(
-            [noti_path, '-t', title, '-m', message],
+            [noti_path, "-t", title, "-m", message],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
         )
         if result.returncode != 0:
             print(f"Warning: noti command failed: {result.stderr}")
@@ -206,35 +210,38 @@ def send_notification(title: str, message: str) -> bool:
 
 def get_args():
     import argparse
+    from textwrap import dedent
 
-    epilog_text = """
-SQL Annotations (embed in SQL comments):
-  -- @param <key> <value>     Define parameters for query substitution
-                              Use {key} or {{key}} in SQL to reference
-                              Example: -- @param table_name my_table
+    epilog_text = dedent("""
+    SQL Annotations (embed in SQL comments):
+      -- @param <key> <value>     Define parameters for query substitution
+                                  Use {key} or {{key}} in SQL to reference
+                                  Example: -- @param table_name my_table
 
-  -- @eval <python_code>      Execute inline Python code on result DataFrame
-                              Example: -- @eval print(df.head())
+      -- @eval <python_code>      Execute inline Python code on result DataFrame
+                                  Example: -- @eval print(df.head())
 
-  -- @eval-file <file_path>   Execute Python code from file on result DataFrame
-                              Example: -- @eval-file analysis.py
-                              Legacy: -- eval: analysis.py
+      -- @eval-file <file_path>   Execute Python code from file on result DataFrame
+                                  Example: -- @eval-file analysis.py
+                                  Legacy: -- eval: analysis.py
 
-Examples:
-  trinoq "SELECT 1"                        # Direct query
-  trinoq -f query.sql                      # Read from file
-  echo "SELECT 1" | trinoq -               # Read from stdin
-  trinoq --dry-run -f query.sql            # Preview rendered query
-  trinoq -t -o json "SELECT * FROM table"  # Time and export to JSON
-  trinoq --noti "SELECT * FROM big_table"  # Send notification when query completes
-"""
+    Examples:
+      trinoq "SELECT 1"                        # Direct query
+      trinoq -f query.sql                      # Read from file
+      echo "SELECT 1" | trinoq -               # Read from stdin
+      trinoq --dry-run -f query.sql            # Preview rendered query
+      trinoq -t -o json "SELECT * FROM table"  # Time and export to JSON
+      trinoq --noti "SELECT * FROM big_table"  # Send notification when query completes
+    """)
 
     parser = argparse.ArgumentParser(
         description="Query Trino database with built-in caching and parameter support",
         epilog=epilog_text,
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("query", help="SQL query string, or use '-' for stdin, or use with -f for file")
+    parser.add_argument(
+        "query", help="SQL query string, or use '-' for stdin, or use with -f for file"
+    )
     parser.add_argument(
         "-f",
         "--file",
@@ -315,6 +322,7 @@ def get_temp_file(query):
 
 def read_sql(*args, **kwargs):
     import warnings
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return pd.read_sql(*args, **kwargs)
@@ -326,7 +334,6 @@ def execute(
     no_cache: bool = True,
     quiet: bool = True,
 ):
-
     if engine is None:
         engine = create_connection()
     if no_cache:
@@ -354,9 +361,8 @@ def execute(
 
 
 def app():
-    import sys
     import time
-    
+
     args = get_args()
     query = get_query(args)
     quiet = args.quiet
@@ -371,10 +377,10 @@ def app():
 
     # Check for eval code in SQL comment (new syntax)
     eval_code_from_query = extract_eval_code(query)
-    
+
     # Check for eval file in SQL comment
     eval_file_from_query = extract_eval_file(query)
-    
+
     # Priority: CLI flag > @eval > @eval-file
     if not args.eval_df:
         if eval_code_from_query:
@@ -386,13 +392,13 @@ def app():
 
     # Measure execution time if --timing flag is set
     start_time = time.time()
-    
+
     try:
         df = execute(query=query, no_cache=args.no_cache, quiet=quiet)
-        
+
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
-        
+
         if args.timing:
             printer(f"\nExecution time: {elapsed_time:.3f}s", quiet=quiet)
 
@@ -401,7 +407,7 @@ def app():
             rows = len(df)
             send_notification(
                 title="TrinoQ Query Complete",
-                message=f"Query finished in {elapsed_time:.2f}s\nReturned {rows} rows"
+                message=f"Query finished in {elapsed_time:.2f}s\nReturned {rows} rows",
             )
 
         # Handle output formats
@@ -423,14 +429,14 @@ def app():
 
             printer("Out[eval]:", quiet=quiet)
             exec(eval_df, globals(), locals())
-            
+
     except Exception as e:
         # Send error notification if requested
         if args.noti:
             elapsed_time = time.time() - start_time
             send_notification(
                 title="TrinoQ Query Failed",
-                message=f"Query failed after {elapsed_time:.2f}s\nError: {str(e)[:100]}"
+                message=f"Query failed after {elapsed_time:.2f}s\nError: {str(e)[:100]}",
             )
         raise
 

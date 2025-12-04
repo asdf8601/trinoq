@@ -537,6 +537,23 @@ class TrinoQApp(App):
         border: solid $primary;
         background: $surface;
     }
+
+    #query-editor.hidden {
+        display: none;
+    }
+
+    #results-container.hidden {
+        display: none;
+    }
+
+    #sidebar.hidden {
+        display: none;
+    }
+
+    #main-area.maximized {
+        grid-size: 1 1;
+        grid-rows: 1fr;
+    }
     """
 
     BINDINGS = [
@@ -546,12 +563,14 @@ class TrinoQApp(App):
         Binding("ctrl+r", "refresh_schema", "Refresh", show=True, priority=True),
         Binding("ctrl+l", "clear_results", "Clear", show=True, priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Sidebar", show=True, priority=True),
+        Binding("ctrl+m", "toggle_maximize", "Max", show=True, priority=True),
         Binding("ctrl+q", "quit", "Quit", show=True, priority=True),
         Binding("ctrl+w", "focus_next_tab", "Next", show=True, priority=True),
         Binding("slash", "show_search", "/ Search", show=True, priority=True),
     ]
 
     show_sidebar = var(True)
+    _maximized_panel: str | None = None  # Track which panel is maximized
     _connection: Any = None
     _focus_order = ["schema-tree", "query-editor", "results-table"]
     _current_focus_idx = 1  # Start on editor
@@ -769,6 +788,65 @@ class TrinoQApp(App):
     def action_focus_results(self) -> None:
         """Focus the results table."""
         self.query_one(ResultsTable).focus()
+
+    def action_toggle_maximize(self) -> None:
+        """Toggle maximize for the focused panel (editor or results)."""
+        editor = self.query_one(QueryEditor)
+        results = self.query_one("#results-container")
+        sidebar = self.query_one("#sidebar")
+        main_area = self.query_one("#main-area")
+
+        # Determine which panel is focused
+        focused = self.focused
+        if focused is None:
+            return
+
+        # Find if we're in editor or results
+        current_panel = None
+        if focused.id == "query-editor" or focused.has_class("text-area"):
+            current_panel = "editor"
+        elif focused.id == "results-table" or focused.id == "results-container":
+            current_panel = "results"
+        else:
+            # Check ancestors
+            node = focused
+            while node is not None:
+                if node.id == "query-editor":
+                    current_panel = "editor"
+                    break
+                elif node.id == "results-container":
+                    current_panel = "results"
+                    break
+                node = node.parent
+
+        if current_panel is None:
+            self.notify("Focus editor or results to maximize")
+            return
+
+        # If already maximized, restore
+        if self._maximized_panel is not None:
+            editor.remove_class("hidden")
+            results.remove_class("hidden")
+            sidebar.remove_class("hidden")
+            main_area.remove_class("maximized")
+            self._maximized_panel = None
+            self.query_one(StatusBar).status = "Restored layout"
+        else:
+            # Maximize current panel
+            sidebar.add_class("hidden")
+            main_area.add_class("maximized")
+            if current_panel == "editor":
+                results.add_class("hidden")
+                self._maximized_panel = "editor"
+                self.query_one(
+                    StatusBar
+                ).status = "Editor maximized (ctrl+m to restore)"
+            else:
+                editor.add_class("hidden")
+                self._maximized_panel = "results"
+                self.query_one(
+                    StatusBar
+                ).status = "Results maximized (ctrl+m to restore)"
 
     def action_focus_next_tab(self) -> None:
         """Focus the next tab."""

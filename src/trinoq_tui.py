@@ -317,6 +317,35 @@ class QueriesPopup(Container):
             results.highlighted = 0
 
 
+class SaveQueryPopup(Container):
+    """Floating popup for naming a query before saving."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__(id="save-query-popup")
+        self.sql_to_save: str = ""
+
+    def compose(self) -> ComposeResult:
+        yield Static("Save Query", id="save-query-title")
+        yield Input(placeholder="Enter query name...", id="save-query-name")
+
+    def action_cancel(self) -> None:
+        self.app.action_hide_save_query()
+
+    def set_default_name(self, sql: str) -> None:
+        """Set a default name based on the SQL."""
+        self.sql_to_save = sql
+        first_line = sql.split("\n")[0].strip()
+        if first_line.startswith("--"):
+            default_name = first_line[2:].strip()[:50]
+        else:
+            default_name = sql[:30].replace("\n", " ")
+        self.query_one("#save-query-name", Input).value = default_name
+
+
 class StatusBar(Static):
     """A status bar widget to display query status with spinner."""
 
@@ -479,6 +508,35 @@ class TrinoQApp(App):
         background: $surface;
         margin-top: 1;
     }
+
+    #save-query-popup {
+        display: none;
+        layer: popup;
+        width: 50%;
+        height: auto;
+        background: $surface;
+        border: round $surface-lighten-2;
+        padding: 1 2;
+        align: center top;
+        margin: 5 0 0 0;
+    }
+
+    #save-query-popup.visible {
+        display: block;
+    }
+
+    #save-query-title {
+        width: 100%;
+        text-align: center;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    #save-query-name {
+        width: 100%;
+        border: solid $primary;
+        background: $surface;
+    }
     """
 
     BINDINGS = [
@@ -510,6 +568,7 @@ class TrinoQApp(App):
         yield StatusBar(id="status-bar")
         yield SearchPopup()
         yield QueriesPopup()
+        yield SaveQueryPopup()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -758,7 +817,7 @@ class TrinoQApp(App):
         self.query_one(QueryEditor).focus()
 
     def action_save_query(self) -> None:
-        """Save the current query."""
+        """Show the save query popup."""
         editor = self.query_one(QueryEditor)
         sql = editor.text.strip()
 
@@ -766,19 +825,24 @@ class TrinoQApp(App):
             self.notify("No query to save", severity="warning")
             return
 
-        # Generate a name from first line or first 30 chars
-        first_line = sql.split("\n")[0].strip()
-        if first_line.startswith("--"):
-            name = first_line[2:].strip()[:50]
-        else:
-            name = sql[:30].replace("\n", " ")
+        popup = self.query_one(SaveQueryPopup)
+        popup.set_default_name(sql)
+        popup.add_class("visible")
+        popup.query_one("#save-query-name", Input).focus()
 
+    def action_hide_save_query(self) -> None:
+        """Hide the save query popup."""
+        popup = self.query_one(SaveQueryPopup)
+        popup.remove_class("visible")
+        self.query_one(QueryEditor).focus()
+
+    def _do_save_query(self, name: str, sql: str) -> None:
+        """Actually save the query with the given name."""
         queries = load_saved_queries()
         queries.insert(0, {"name": name, "sql": sql, "saved_at": time.time()})
         # Keep only last 50 queries
         queries = queries[:50]
         save_queries(queries)
-
         self.notify(f"Query saved: {name}", severity="information")
 
     def action_show_queries(self) -> None:
@@ -853,6 +917,17 @@ class TrinoQApp(App):
         elif event.input.id == "queries-filter":
             popup = self.query_one(QueriesPopup)
             popup._update_list(event.value.strip())
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key in input fields."""
+        if event.input.id == "save-query-name":
+            popup = self.query_one(SaveQueryPopup)
+            name = event.value.strip()
+            if name and popup.sql_to_save:
+                self._do_save_query(name, popup.sql_to_save)
+                self.action_hide_save_query()
+            elif not name:
+                self.notify("Please enter a name", severity="warning")
 
     @work(thread=True, exclusive=True, group="load_tables")
     def _load_all_tables(self) -> None:

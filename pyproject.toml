@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov"]
+tui = ["textual>=0.80.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -34,6 +35,7 @@ package-dir = {"" = "src"}
 
 [project.scripts]
 trinoq = "trinoq:app"
+trinoq-tui = "trinoq_tui:main"
 
 
 [tool.setuptools_scm]

@@ -9,17 +9,26 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+import fcntl
 import json
 import os
+import pty
+import struct
+import termios
 import time
 from pathlib import Path
 from typing import Any
 
-from textual import work
+import pyte
+from rich.text import Text
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
+from textual.message import Message
 from textual.reactive import reactive, var
+from textual.widget import Widget
 from textual.widgets import (
     DataTable,
     Footer,
@@ -37,7 +46,275 @@ from textual.widgets.tree import TreeNode
 CACHE_DIR = Path("/tmp/trinoq")
 TABLES_CACHE_FILE = CACHE_DIR / "tables_cache.json"
 QUERIES_FILE = CACHE_DIR / "saved_queries.json"
+VIM_TEMP_FILE = CACHE_DIR / "vim_edit.sql"
 CACHE_MAX_AGE_SECONDS = 3600  # Refresh cache if older than 1 hour
+
+# Key mappings for terminal
+CTRL_KEYS = {
+    "left": "\x1b[D",
+    "right": "\x1b[C",
+    "up": "\x1b[A",
+    "down": "\x1b[B",
+    "home": "\x1b[H",
+    "end": "\x1b[F",
+    "pageup": "\x1b[5~",
+    "pagedown": "\x1b[6~",
+    "delete": "\x1b[3~",
+    "escape": "\x1b",
+    "enter": "\r",
+    "backspace": "\x7f",
+    "tab": "\t",
+}
+
+
+def _pyte_color_to_rich(color: str) -> str:
+    """Convert pyte color to Rich color format."""
+    if color == "default":
+        return ""
+    # If it looks like a hex color (6 chars, all hex), add #
+    if len(color) == 6 and all(c in "0123456789abcdefABCDEF" for c in color):
+        return f"#{color}"
+    return color
+
+
+class PyteDisplay:
+    """Rich-compatible display for pyte screen content."""
+
+    def __init__(self, lines: list[Text]) -> None:
+        self.lines = lines
+
+    def __rich_console__(self, console, options):
+        for line in self.lines:
+            yield line
+
+
+class VimEditor(Widget, can_focus=True):
+    """Embedded vim/nvim editor using pyte terminal emulation."""
+
+    DEFAULT_CSS = """
+    VimEditor {
+        width: 100%;
+        height: 100%;
+        background: #1e1e1e;
+    }
+    """
+
+    class Closed(Message):
+        """Message sent when vim exits."""
+
+        def __init__(self, content: str) -> None:
+            self.content = content
+            super().__init__()
+
+    def __init__(
+        self,
+        *,
+        name: str | None = None,
+        id: str | None = None,
+        classes: str | None = None,
+    ) -> None:
+        super().__init__(name=name, id=id, classes=classes)
+        self._display = PyteDisplay([Text()])
+        self._screen: pyte.Screen | None = None
+        self._stream: pyte.Stream | None = None
+        self._fd: int | None = None
+        self._p_out = None
+        self._temp_file: Path | None = None
+        self._running = False
+        self._size_set = asyncio.Event()
+        self._data_or_disconnect = None
+        self._event = asyncio.Event()
+        self._background_tasks: set = set()
+        self._initial_content: str = ""
+
+    def render(self):
+        return self._display
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Handle resize events."""
+        # Subtract 2 for border (top + bottom) from height
+        # Subtract 2 for border (left + right) from width
+        ncol = max(1, event.size.width - 2)
+        nrow = max(1, event.size.height - 2)
+        if ncol > 0 and nrow > 0:
+            self._screen = pyte.Screen(ncol, nrow)
+            self._stream = pyte.Stream(self._screen)
+            self._size_set.set()
+            # Update pty size if running
+            if self._fd is not None:
+                try:
+                    winsize = struct.pack("HH", nrow, ncol)
+                    fcntl.ioctl(self._fd, termios.TIOCSWINSZ, winsize)
+                except OSError:
+                    pass
+
+    async def on_key(self, event: events.Key) -> None:
+        """Handle key events and forward to vim."""
+        if not self._running or self._p_out is None:
+            return
+
+        event.stop()
+
+        char = None
+
+        # Handle ctrl+key combinations
+        if event.key.startswith("ctrl+"):
+            key_char = event.key[-1]
+            if key_char.isalpha():
+                char = chr(ord(key_char.lower()) - ord("a") + 1)
+        else:
+            # Handle mapped special keys
+            char = CTRL_KEYS.get(event.key) or event.character
+
+        if char:
+            try:
+                self._p_out.write(char.encode())
+            except Exception:
+                pass
+
+    def open_with_content(self, content: str) -> None:
+        """Open vim with the given content."""
+        self._initial_content = content
+        self._running = True
+        self.focus()
+        # Start async tasks
+        task = asyncio.create_task(self._run())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        task = asyncio.create_task(self._send())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    def _open_vim(self) -> int:
+        """Fork and exec vim."""
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self._temp_file = VIM_TEMP_FILE
+        self._temp_file.write_text(self._initial_content)
+
+        pid, fd = pty.fork()
+        if pid == 0:
+            # Child process
+            editor = os.environ.get("EDITOR", "vim")
+            ncol = self._screen.columns if self._screen else 80
+            nrow = self._screen.lines if self._screen else 24
+            env = dict(
+                TERM="xterm-256color",
+                LC_ALL="en_US.UTF-8",
+                COLUMNS=str(ncol),
+                LINES=str(nrow),
+            )
+            env.update(os.environ)
+            os.execvpe(editor, [editor, str(self._temp_file)], env)
+        return fd
+
+    async def _run(self) -> None:
+        """Main run loop for vim process."""
+        await self._size_set.wait()
+
+        self._fd = self._open_vim()
+        self._p_out = os.fdopen(self._fd, "w+b", 0)
+
+        # Set pty size after fork to ensure vim gets correct dimensions
+        if self._screen:
+            nrow = self._screen.lines
+            ncol = self._screen.columns
+            try:
+                winsize = struct.pack("HH", nrow, ncol)
+                fcntl.ioctl(self._fd, termios.TIOCSWINSZ, winsize)
+            except OSError:
+                pass
+
+        loop = asyncio.get_running_loop()
+
+        def on_output():
+            try:
+                data = self._p_out.read(65536)
+                if data:
+                    self._data_or_disconnect = data.decode("utf-8", errors="replace")
+                else:
+                    self._data_or_disconnect = None
+                self._event.set()
+            except Exception:
+                loop.remove_reader(self._p_out)
+                self._data_or_disconnect = None
+                self._event.set()
+
+        loop.add_reader(self._p_out, on_output)
+
+    async def _send(self) -> None:
+        """Process vim output and update display."""
+        while self._running:
+            await self._event.wait()
+            self._event.clear()
+
+            if self._data_or_disconnect is None:
+                # Vim exited
+                self._running = False
+                content = ""
+                if self._temp_file and self._temp_file.exists():
+                    content = self._temp_file.read_text()
+                self._cleanup()
+                self.post_message(self.Closed(content))
+                break
+            else:
+                # Update display
+                if self._stream and self._screen:
+                    self._stream.feed(self._data_or_disconnect)
+                    lines = []
+                    for row in range(self._screen.lines):
+                        text = Text()
+                        line_buffer = self._screen.buffer[row]
+                        for col in range(self._screen.columns):
+                            char_data = line_buffer[col]
+                            char = char_data.data or " "
+                            # Build style from pyte character attributes
+                            style_parts = []
+                            fg = _pyte_color_to_rich(char_data.fg)
+                            bg = _pyte_color_to_rich(char_data.bg)
+                            if char_data.reverse:
+                                # For reverse, swap fg/bg
+                                fg, bg = bg or "black", fg or "white"
+                            if fg:
+                                style_parts.append(fg)
+                            if bg:
+                                style_parts.append(f"on {bg}")
+                            if char_data.bold:
+                                style_parts.append("bold")
+                            if char_data.italics:
+                                style_parts.append("italic")
+                            if char_data.underscore:
+                                style_parts.append("underline")
+                            style = " ".join(style_parts) if style_parts else None
+                            text.append(char, style)
+                        # Add cursor with reverse video
+                        if row == self._screen.cursor.y:
+                            x = self._screen.cursor.x
+                            if x < len(text):
+                                cursor = text[x]
+                                cursor.stylize("reverse")
+                                new_text = text[:x]
+                                new_text.append(cursor)
+                                new_text.append(text[x + 1 :])
+                                text = new_text
+                        lines.append(text)
+                    self._display = PyteDisplay(lines)
+                    self.refresh()
+
+    def _cleanup(self) -> None:
+        """Clean up resources."""
+        if self._p_out is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.remove_reader(self._p_out)
+            except Exception:
+                pass
+            try:
+                self._p_out.close()
+            except Exception:
+                pass
+            self._p_out = None
+        self._fd = None
+        self._running = False
 
 
 def load_tables_cache() -> list[dict]:
@@ -554,18 +831,40 @@ class TrinoQApp(App):
         grid-size: 1 1;
         grid-rows: 1fr;
     }
+
+    #vim-editor {
+        display: none;
+        width: 100%;
+        height: 100%;
+        border: round $primary;
+    }
+
+    #vim-editor.visible {
+        display: block;
+    }
+
+    #vim-editor:focus {
+        border: round $accent;
+    }
+
+    #editor-container {
+        height: 100%;
+        width: 100%;
+    }
     """
 
     BINDINGS = [
-        Binding("ctrl+e", "execute_query", "Run", show=True, priority=True),
+        Binding("ctrl+enter", "execute_query", "Run", show=True, priority=True),
         Binding("ctrl+s", "save_query", "Save", show=True, priority=True),
         Binding("ctrl+o", "show_queries", "Open", show=True, priority=True),
         Binding("ctrl+r", "refresh_schema", "Refresh", show=True, priority=True),
         Binding("ctrl+l", "clear_results", "Clear", show=True, priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Sidebar", show=True, priority=True),
         Binding("ctrl+m", "toggle_maximize", "Max", show=True, priority=True),
+        Binding("ctrl+v", "open_vim", "Vim", show=True, priority=True),
         Binding("ctrl+q", "quit", "Quit", show=True, priority=True),
-        Binding("ctrl+w", "focus_next_tab", "Next", show=True, priority=True),
+        Binding("tab", "focus_next_tab", "Next", show=True, priority=True),
+        Binding("shift+tab", "focus_prev_tab", "Prev", show=True, priority=True),
         Binding("slash", "show_search", "/ Search", show=True, priority=True),
     ]
 
@@ -581,7 +880,9 @@ class TrinoQApp(App):
             with Container(id="sidebar"):
                 yield SchemaTree()
             with Vertical(id="main-area"):
-                yield QueryEditor()
+                with Container(id="editor-container"):
+                    yield QueryEditor()
+                    yield VimEditor(id="vim-editor")
                 with Container(id="results-container"):
                     yield ResultsTable()
         yield StatusBar(id="status-bar")
@@ -776,6 +1077,36 @@ class TrinoQApp(App):
     def action_toggle_sidebar(self) -> None:
         """Toggle the sidebar visibility."""
         self.show_sidebar = not self.show_sidebar
+
+    def action_open_vim(self) -> None:
+        """Open vim to edit the current query."""
+        editor = self.query_one(QueryEditor)
+        vim_editor = self.query_one(VimEditor)
+
+        # Hide editor, show VimEditor in its place
+        editor.add_class("hidden")
+        vim_editor.add_class("visible")
+
+        # Open vim with current content
+        vim_editor.open_with_content(editor.text)
+        self.query_one(
+            StatusBar
+        ).status = "Editing in $EDITOR... (:wq to save, :q! to cancel)"
+
+    def on_vim_editor_closed(self, event: VimEditor.Closed) -> None:
+        """Handle vim editor closing."""
+        editor = self.query_one(QueryEditor)
+        vim_editor = self.query_one(VimEditor)
+
+        # Update editor with content from vim
+        editor.text = event.content
+
+        # Restore normal layout
+        vim_editor.remove_class("visible")
+        editor.remove_class("hidden")
+        editor.focus()
+
+        self.query_one(StatusBar).status = "Returned from editor"
 
     def action_focus_tree(self) -> None:
         """Focus the schema tree."""

@@ -9,23 +9,116 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import os
 import time
+from pathlib import Path
 from typing import Any
 
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Vertical
+from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive, var
 from textual.widgets import (
     DataTable,
     Footer,
     Header,
+    Input,
+    OptionList,
     Static,
     TextArea,
     Tree,
 )
+from textual.widgets.option_list import Option
 from textual.widgets.tree import TreeNode
+
+# Cache file for tables
+CACHE_DIR = Path("/tmp/trinoq")
+TABLES_CACHE_FILE = CACHE_DIR / "tables_cache.json"
+QUERIES_FILE = CACHE_DIR / "saved_queries.json"
+CACHE_MAX_AGE_SECONDS = 3600  # Refresh cache if older than 1 hour
+
+
+def load_tables_cache() -> list[dict]:
+    """Load tables from cache file."""
+    try:
+        if TABLES_CACHE_FILE.exists():
+            with open(TABLES_CACHE_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def save_tables_cache(tables: list[dict]) -> None:
+    """Save tables to cache file."""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(TABLES_CACHE_FILE, "w") as f:
+            json.dump(tables, f)
+    except Exception:
+        pass
+
+
+def cache_needs_refresh() -> bool:
+    """Check if cache is stale and needs refresh."""
+    try:
+        if not TABLES_CACHE_FILE.exists():
+            return True
+        age = time.time() - TABLES_CACHE_FILE.stat().st_mtime
+        return age > CACHE_MAX_AGE_SECONDS
+    except Exception:
+        return True
+
+
+def load_saved_queries() -> list[dict]:
+    """Load saved queries from file."""
+    try:
+        if QUERIES_FILE.exists():
+            with open(QUERIES_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def save_queries(queries: list[dict]) -> None:
+    """Save queries to file."""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(QUERIES_FILE, "w") as f:
+            json.dump(queries, f, indent=2)
+    except Exception:
+        pass
+
+
+def fuzzy_match(pattern: str, text: str) -> tuple[bool, int]:
+    """Fuzzy matching - returns (matched, score). Higher score = better match."""
+    pattern = pattern.lower()
+    text = text.lower()
+
+    if not pattern:
+        return True, 0
+
+    p_idx = 0
+    score = 0
+    prev_match = -1
+
+    for i, char in enumerate(text):
+        if p_idx < len(pattern) and char == pattern[p_idx]:
+            # Bonus for consecutive matches
+            if prev_match == i - 1:
+                score += 10
+            # Bonus for matching at start or after separator
+            if i == 0 or text[i - 1] in "._-":
+                score += 5
+            score += 1
+            prev_match = i
+            p_idx += 1
+
+    matched = p_idx == len(pattern)
+    return matched, score if matched else 0
 
 
 class SchemaTree(Tree):
@@ -34,6 +127,7 @@ class SchemaTree(Tree):
     def __init__(self) -> None:
         super().__init__("Catalogs", id="schema-tree")
         self.show_root = True
+        self._all_tables: list[dict] = []  # Store all tables for filtering
 
     def populate_catalogs(self, catalogs: list[str]) -> None:
         """Populate the tree with catalog names."""
@@ -62,16 +156,33 @@ class SchemaTree(Tree):
         """Populate a schema node with table names."""
         # Remove placeholder
         schema_node.remove_children()
+        catalog = schema_node.data["catalog"]
+        schema_name = schema_node.data["name"]
         for table in sorted(tables):
-            schema_node.add_leaf(
-                f"[green]{table}[/green]",
-                data={
-                    "type": "table",
-                    "name": table,
-                    "schema": schema_node.data["name"],
-                    "catalog": schema_node.data["catalog"],
-                },
-            )
+            table_data = {
+                "type": "table",
+                "name": table,
+                "schema": schema_name,
+                "catalog": catalog,
+            }
+            schema_node.add_leaf(f"[green]{table}[/green]", data=table_data)
+            # Store for filtering
+            self._all_tables.append(table_data)
+
+    def get_all_tables(self) -> list[dict]:
+        """Get all loaded tables."""
+        return self._all_tables
+
+    def find_table_node(self, catalog: str, schema: str, table: str) -> TreeNode | None:
+        """Find a table node by its full path."""
+        for catalog_node in self.root.children:
+            if catalog_node.data and catalog_node.data.get("name") == catalog:
+                for schema_node in catalog_node.children:
+                    if schema_node.data and schema_node.data.get("name") == schema:
+                        for table_node in schema_node.children:
+                            if table_node.data and table_node.data.get("name") == table:
+                                return table_node
+        return None
 
 
 class QueryEditor(TextArea):
@@ -110,12 +221,124 @@ class ResultsTable(DataTable):
         self.add_row(str(error))
 
 
+class SearchPopup(Container):
+    """Floating search popup with input and results list."""
+
+    BINDINGS = [
+        Binding("escape", "cancel_search", "Cancel", show=False, priority=True),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__(id="search-popup")
+        self.matches: list[dict] = []
+        self.all_tables: list[dict] = []  # Cache of all tables
+
+    def compose(self) -> ComposeResult:
+        yield Input(placeholder="Search tables (fuzzy)...", id="search-input")
+        yield OptionList(id="search-results")
+
+    def action_cancel_search(self) -> None:
+        self.app.action_hide_search()
+
+    def update_results(self, matches: list[dict]) -> None:
+        """Update the results list."""
+        self.matches = matches
+        results = self.query_one("#search-results", OptionList)
+        results.clear_options()
+        for match in matches:
+            full_name = f"{match['catalog']}.{match['schema']}.{match['name']}"
+            results.add_option(Option(full_name, id=full_name))
+        if matches:
+            results.highlighted = 0
+
+    def filter_tables(self, pattern: str) -> list[dict]:
+        """Filter cached tables using fuzzy matching."""
+        if not pattern:
+            return self.all_tables[:50]
+
+        scored = []
+        for table in self.all_tables:
+            # Match against table name and full path
+            full_name = f"{table['schema']}.{table['name']}"
+            matched, score = fuzzy_match(pattern, table["name"])
+            if matched:
+                scored.append((score, table))
+            else:
+                matched, score = fuzzy_match(pattern, full_name)
+                if matched:
+                    scored.append((score, table))
+
+        # Sort by score descending
+        scored.sort(key=lambda x: -x[0])
+        return [t for _, t in scored[:50]]
+
+
+class QueriesPopup(Container):
+    """Floating popup for saved queries."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+        Binding("delete", "delete_query", "Delete", show=False, priority=True),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__(id="queries-popup")
+        self.queries: list[dict] = []
+
+    def compose(self) -> ComposeResult:
+        yield Static("Saved Queries (Enter=load, Del=delete)", id="queries-title")
+        yield Input(placeholder="Filter queries...", id="queries-filter")
+        yield OptionList(id="queries-list")
+
+    def action_cancel(self) -> None:
+        self.app.action_hide_queries()
+
+    def action_delete_query(self) -> None:
+        self.app.action_delete_selected_query()
+
+    def load_queries(self) -> None:
+        """Load and display saved queries."""
+        self.queries = load_saved_queries()
+        self._update_list("")
+
+    def _update_list(self, filter_text: str) -> None:
+        """Update the queries list with optional filter."""
+        results = self.query_one("#queries-list", OptionList)
+        results.clear_options()
+
+        for i, q in enumerate(self.queries):
+            name = q.get("name", f"Query {i + 1}")
+            sql_preview = q.get("sql", "")[:50].replace("\n", " ")
+            if filter_text and filter_text.lower() not in name.lower():
+                continue
+            results.add_option(Option(f"{name}: {sql_preview}...", id=str(i)))
+
+        if self.queries and results.option_count > 0:
+            results.highlighted = 0
+
+
 class StatusBar(Static):
-    """A status bar widget to display query status."""
+    """A status bar widget to display query status with spinner."""
 
     status = reactive("Ready")
+    is_running = reactive(False)
+    _spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    _spinner_idx = 0
+
+    def on_mount(self) -> None:
+        """Start spinner animation."""
+        self.set_interval(0.1, self._update_spinner)
+
+    def _update_spinner(self) -> None:
+        """Update spinner frame."""
+        if self.is_running:
+            self._spinner_idx = (self._spinner_idx + 1) % len(self._spinner_frames)
+            self.refresh()
 
     def render(self) -> str:
+        if self.is_running:
+            spinner = self._spinner_frames[self._spinner_idx]
+            return f" {spinner} {self.status}"
         return f" {self.status}"
 
 
@@ -126,10 +349,19 @@ class TrinoQApp(App):
     SUB_TITLE = "Trino Query Browser"
 
     CSS = """
+    Screen {
+        layout: vertical;
+        layers: base popup;
+    }
+
+    #content-area {
+        width: 100%;
+        height: 1fr;
+    }
+
     #sidebar {
         width: 30;
         height: 100%;
-        dock: left;
         border-right: solid $primary;
     }
 
@@ -140,11 +372,11 @@ class TrinoQApp(App):
     }
 
     #main-area {
-        width: 100%;
+        width: 1fr;
         height: 100%;
         layout: grid;
-        grid-size: 1 3;
-        grid-rows: 2fr 3fr 1;
+        grid-size: 1 2;
+        grid-rows: 2fr 3fr;
     }
 
     #query-editor {
@@ -162,6 +394,7 @@ class TrinoQApp(App):
     }
 
     #status-bar {
+        width: 100%;
         height: 1;
         background: $surface;
         color: $text-muted;
@@ -175,15 +408,89 @@ class TrinoQApp(App):
     #query-editor:focus-within {
         border: round $accent;
     }
+
+    #search-popup {
+        display: none;
+        layer: popup;
+        width: 70%;
+        height: auto;
+        max-height: 20;
+        background: $surface;
+        border: round $surface-lighten-2;
+        padding: 1 2;
+        align: center top;
+        margin: 3 0 0 0;
+    }
+
+    #search-popup.visible {
+        display: block;
+    }
+
+    #search-input {
+        width: 100%;
+        border: none;
+        background: $surface;
+    }
+
+    #search-results {
+        width: 100%;
+        height: auto;
+        max-height: 15;
+        border: none;
+        background: $surface;
+        margin-top: 1;
+    }
+
+    #queries-popup {
+        display: none;
+        layer: popup;
+        width: 70%;
+        height: auto;
+        max-height: 22;
+        background: $surface;
+        border: round $surface-lighten-2;
+        padding: 1 2;
+        align: center top;
+        margin: 3 0 0 0;
+    }
+
+    #queries-popup.visible {
+        display: block;
+    }
+
+    #queries-title {
+        width: 100%;
+        text-align: center;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    #queries-filter {
+        width: 100%;
+        border: none;
+        background: $surface;
+    }
+
+    #queries-list {
+        width: 100%;
+        height: auto;
+        max-height: 15;
+        border: none;
+        background: $surface;
+        margin-top: 1;
+    }
     """
 
     BINDINGS = [
-        Binding("ctrl+e", "execute_query", "Run Query", show=True, priority=True),
-        Binding("ctrl+r", "refresh_schema", "Refresh Schema", show=True, priority=True),
-        Binding("ctrl+l", "clear_results", "Clear Results", show=True, priority=True),
-        Binding("ctrl+b", "toggle_sidebar", "Toggle Sidebar", show=True, priority=True),
+        Binding("ctrl+e", "execute_query", "Run", show=True, priority=True),
+        Binding("ctrl+s", "save_query", "Save", show=True, priority=True),
+        Binding("ctrl+o", "show_queries", "Open", show=True, priority=True),
+        Binding("ctrl+r", "refresh_schema", "Refresh", show=True, priority=True),
+        Binding("ctrl+l", "clear_results", "Clear", show=True, priority=True),
+        Binding("ctrl+b", "toggle_sidebar", "Sidebar", show=True, priority=True),
         Binding("ctrl+q", "quit", "Quit", show=True, priority=True),
         Binding("ctrl+w", "focus_next_tab", "Next", show=True, priority=True),
+        Binding("slash", "show_search", "/ Search", show=True, priority=True),
     ]
 
     show_sidebar = var(True)
@@ -193,13 +500,16 @@ class TrinoQApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Container(id="sidebar"):
-            yield SchemaTree()
-        with Vertical(id="main-area"):
-            yield QueryEditor()
-            with Container(id="results-container"):
-                yield ResultsTable()
-            yield StatusBar(id="status-bar")
+        with Horizontal(id="content-area"):
+            with Container(id="sidebar"):
+                yield SchemaTree()
+            with Vertical(id="main-area"):
+                yield QueryEditor()
+                with Container(id="results-container"):
+                    yield ResultsTable()
+        yield StatusBar(id="status-bar")
+        yield SearchPopup()
+        yield QueriesPopup()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -337,6 +647,7 @@ class TrinoQApp(App):
         status = self.query_one(StatusBar)
         results_table = self.query_one(ResultsTable)
 
+        self.call_from_thread(setattr, status, "is_running", True)
         self.call_from_thread(setattr, status, "status", "Running query...")
 
         start_time = time.time()
@@ -350,6 +661,7 @@ class TrinoQApp(App):
             elapsed = time.time() - start_time
 
             self.call_from_thread(results_table.display_results, columns, rows)
+            self.call_from_thread(setattr, status, "is_running", False)
             self.call_from_thread(
                 setattr,
                 status,
@@ -361,6 +673,7 @@ class TrinoQApp(App):
             )
 
         except Exception as e:
+            self.call_from_thread(setattr, status, "is_running", False)
             self.call_from_thread(results_table.display_error, str(e))
             self.call_from_thread(setattr, status, "status", f"Query failed: {e}")
             self.call_from_thread(self.notify, f"Query failed: {e}", severity="error")
@@ -414,6 +727,185 @@ class TrinoQApp(App):
     def action_refresh_schema(self) -> None:
         """Trigger schema refresh."""
         self._load_catalogs()
+
+    def action_show_search(self) -> None:
+        """Show the table search popup."""
+        popup = self.query_one(SearchPopup)
+        popup.add_class("visible")
+        popup.query_one("#search-input", Input).value = ""
+        popup.query_one("#search-results", OptionList).clear_options()
+        popup.matches = []
+        popup.query_one("#search-input", Input).focus()
+
+        # Load from cache first (instant)
+        if not popup.all_tables:
+            cached = load_tables_cache()
+            if cached:
+                popup.all_tables = cached
+                popup.update_results(cached[:50])
+                self.query_one(
+                    StatusBar
+                ).status = f"Loaded {len(cached)} tables from cache"
+
+        # Refresh in background if cache is stale
+        if cache_needs_refresh():
+            self._load_all_tables()
+
+    def action_hide_search(self) -> None:
+        """Hide the table search popup."""
+        popup = self.query_one(SearchPopup)
+        popup.remove_class("visible")
+        self.query_one(QueryEditor).focus()
+
+    def action_save_query(self) -> None:
+        """Save the current query."""
+        editor = self.query_one(QueryEditor)
+        sql = editor.text.strip()
+
+        if not sql:
+            self.notify("No query to save", severity="warning")
+            return
+
+        # Generate a name from first line or first 30 chars
+        first_line = sql.split("\n")[0].strip()
+        if first_line.startswith("--"):
+            name = first_line[2:].strip()[:50]
+        else:
+            name = sql[:30].replace("\n", " ")
+
+        queries = load_saved_queries()
+        queries.insert(0, {"name": name, "sql": sql, "saved_at": time.time()})
+        # Keep only last 50 queries
+        queries = queries[:50]
+        save_queries(queries)
+
+        self.notify(f"Query saved: {name}", severity="information")
+
+    def action_show_queries(self) -> None:
+        """Show the saved queries popup."""
+        popup = self.query_one(QueriesPopup)
+        popup.add_class("visible")
+        popup.load_queries()
+        popup.query_one("#queries-filter", Input).value = ""
+        popup.query_one("#queries-filter", Input).focus()
+
+    def action_hide_queries(self) -> None:
+        """Hide the queries popup."""
+        popup = self.query_one(QueriesPopup)
+        popup.remove_class("visible")
+        self.query_one(QueryEditor).focus()
+
+    def action_delete_selected_query(self) -> None:
+        """Delete the selected query."""
+        popup = self.query_one(QueriesPopup)
+        results = popup.query_one("#queries-list", OptionList)
+
+        if results.highlighted is not None and results.highlighted < len(popup.queries):
+            idx = results.highlighted
+            deleted = popup.queries.pop(idx)
+            save_queries(popup.queries)
+            popup._update_list(popup.query_one("#queries-filter", Input).value)
+            self.notify(f"Deleted: {deleted.get('name', 'query')}", severity="warning")
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Handle selection from popup lists."""
+        if event.option_list.id == "search-results":
+            popup = self.query_one(SearchPopup)
+            if event.option_index < len(popup.matches):
+                match = popup.matches[event.option_index]
+                full_name = f"{match['catalog']}.{match['schema']}.{match['name']}"
+                editor = self.query_one(QueryEditor)
+                editor.insert(full_name)
+            self.action_hide_search()
+
+        elif event.option_list.id == "queries-list":
+            popup = self.query_one(QueriesPopup)
+            if event.option_index < len(popup.queries):
+                query = popup.queries[event.option_index]
+                editor = self.query_one(QueryEditor)
+                editor.text = query.get("sql", "")
+                self.notify(f"Loaded: {query.get('name', 'query')}")
+            self.action_hide_queries()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Handle input changes in popups."""
+        if event.input.id == "search-input":
+            popup = self.query_one(SearchPopup)
+            pattern = event.value.strip()
+
+            status = self.query_one(StatusBar)
+
+            if not popup.all_tables:
+                status.status = "Loading tables, please wait..."
+                return
+
+            # Filter locally using fuzzy match
+            matches = popup.filter_tables(pattern)
+            popup.update_results(matches)
+
+            if matches:
+                status.status = (
+                    f"Found {len(matches)} of {len(popup.all_tables)} tables"
+                )
+            else:
+                status.status = f"No matches in {len(popup.all_tables)} tables"
+
+        elif event.input.id == "queries-filter":
+            popup = self.query_one(QueriesPopup)
+            popup._update_list(event.value.strip())
+
+    @work(thread=True, exclusive=True, group="load_tables")
+    def _load_all_tables(self) -> None:
+        """Load all tables from Trino for fuzzy search."""
+        import pandas as pd
+
+        popup = self.query_one(SearchPopup)
+        status = self.query_one(StatusBar)
+
+        self.call_from_thread(setattr, status, "status", "Refreshing tables...")
+
+        try:
+            conn = self._get_connection()
+
+            # Get all catalogs
+            catalogs_df = pd.read_sql("SHOW CATALOGS", conn)
+            catalogs = catalogs_df.iloc[:, 0].tolist()
+
+            all_tables = []
+
+            for catalog in catalogs:
+                if catalog == "system":
+                    continue
+                try:
+                    query = f"""
+                        SELECT table_catalog, table_schema, table_name 
+                        FROM {catalog}.information_schema.tables 
+                        LIMIT 500
+                    """
+                    df = pd.read_sql(query, conn)
+                    for row in df.itertuples():
+                        all_tables.append(
+                            {"catalog": row[1], "schema": row[2], "name": row[3]}
+                        )
+                except Exception:
+                    pass
+
+            # Save to cache file
+            save_tables_cache(all_tables)
+
+            def update_cache():
+                popup.all_tables = all_tables
+                # Only update results if popup is visible and no filter applied
+                if popup.has_class("visible"):
+                    search_input = popup.query_one("#search-input", Input)
+                    if not search_input.value.strip():
+                        popup.update_results(all_tables[:50])
+                status.status = f"Refreshed {len(all_tables)} tables"
+
+            self.call_from_thread(update_cache)
+
+        except Exception as e:
+            self.call_from_thread(setattr, status, "status", f"Load error: {e}")
 
 
 def main() -> None:

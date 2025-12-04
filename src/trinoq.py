@@ -313,7 +313,7 @@ def get_temp_file(query):
     from pathlib import Path
 
     qhash = sha1(query.encode()).hexdigest()
-    temp_file = Path(f"/tmp/druidq/{qhash}.parquet")
+    temp_file = Path(f"/tmp/trinoq/{qhash}.parquet")
     if not temp_file.parent.exists():
         temp_file.parent.mkdir(parents=True, exist_ok=True)
 

@@ -183,18 +183,19 @@ class TrinoQApp(App):
     """
 
     BINDINGS = [
-        Binding("ctrl+enter", "execute_query", "Run Query", show=True, priority=True),
+        Binding("ctrl+m", "execute_query", "Run Query", show=True, priority=True),
         Binding("ctrl+r", "refresh_schema", "Refresh Schema", show=True),
         Binding("ctrl+l", "clear_results", "Clear Results", show=True),
-        Binding("ctrl+t", "toggle_sidebar", "Toggle Sidebar", show=True),
+        Binding("ctrl+b", "toggle_sidebar", "Toggle Sidebar", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
-        Binding("f1", "focus_tree", "Schema", show=False),
-        Binding("f2", "focus_editor", "Editor", show=False),
-        Binding("f3", "focus_results", "Results", show=False),
+        Binding("ctrl+]", "focus_next_tab", "Next", show=True),
+        Binding("ctrl+[", "focus_prev_tab", "Prev", show=True),
     ]
 
     show_sidebar = var(True)
     _connection: Any = None
+    _focus_order = ["schema-tree", "query-editor", "results-table"]
+    _current_focus_idx = 1  # Start on editor
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -403,6 +404,18 @@ class TrinoQApp(App):
     def action_focus_results(self) -> None:
         """Focus the results table."""
         self.query_one(ResultsTable).focus()
+
+    def action_focus_next_tab(self) -> None:
+        """Focus the next tab (gt vim-style)."""
+        self._current_focus_idx = (self._current_focus_idx + 1) % len(self._focus_order)
+        widget_id = self._focus_order[self._current_focus_idx]
+        self.query_one(f"#{widget_id}").focus()
+
+    def action_focus_prev_tab(self) -> None:
+        """Focus the previous tab (gT vim-style)."""
+        self._current_focus_idx = (self._current_focus_idx - 1) % len(self._focus_order)
+        widget_id = self._focus_order[self._current_focus_idx]
+        self.query_one(f"#{widget_id}").focus()
 
     def action_refresh_schema(self) -> None:
         """Trigger schema refresh."""

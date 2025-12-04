@@ -126,15 +126,10 @@ class TrinoQApp(App):
     SUB_TITLE = "Trino Query Browser"
 
     CSS = """
-    Screen {
-        layout: grid;
-        grid-size: 2 1;
-        grid-columns: 1fr 3fr;
-    }
-
     #sidebar {
-        width: 100%;
+        width: 30;
         height: 100%;
+        dock: left;
         border-right: solid $primary;
     }
 
@@ -183,12 +178,12 @@ class TrinoQApp(App):
     """
 
     BINDINGS = [
-        Binding("ctrl+m", "execute_query", "Run Query", show=True, priority=True),
-        Binding("ctrl+r", "refresh_schema", "Refresh Schema", show=True),
-        Binding("ctrl+l", "clear_results", "Clear Results", show=True),
-        Binding("ctrl+b", "toggle_sidebar", "Toggle Sidebar", show=True),
-        Binding("ctrl+q", "quit", "Quit", show=True),
-        Binding("ctrl+w", "focus_next_tab", "Next", show=True),
+        Binding("ctrl+e", "execute_query", "Run Query", show=True, priority=True),
+        Binding("ctrl+r", "refresh_schema", "Refresh Schema", show=True, priority=True),
+        Binding("ctrl+l", "clear_results", "Clear Results", show=True, priority=True),
+        Binding("ctrl+b", "toggle_sidebar", "Toggle Sidebar", show=True, priority=True),
+        Binding("ctrl+q", "quit", "Quit", show=True, priority=True),
+        Binding("ctrl+w", "focus_next_tab", "Next", show=True, priority=True),
     ]
 
     show_sidebar = var(True)
@@ -405,10 +400,11 @@ class TrinoQApp(App):
         self.query_one(ResultsTable).focus()
 
     def action_focus_next_tab(self) -> None:
-        """Focus the next tab (gt vim-style)."""
+        """Focus the next tab."""
         self._current_focus_idx = (self._current_focus_idx + 1) % len(self._focus_order)
         widget_id = self._focus_order[self._current_focus_idx]
         self.query_one(f"#{widget_id}").focus()
+        self.notify(f"Focused: {widget_id}")
 
     def action_focus_prev_tab(self) -> None:
         """Focus the previous tab (gT vim-style)."""

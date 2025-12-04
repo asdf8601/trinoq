@@ -188,8 +188,7 @@ class TrinoQApp(App):
         Binding("ctrl+l", "clear_results", "Clear Results", show=True),
         Binding("ctrl+b", "toggle_sidebar", "Toggle Sidebar", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
-        Binding("ctrl+]", "focus_next_tab", "Next", show=True),
-        Binding("ctrl+[", "focus_prev_tab", "Prev", show=True),
+        Binding("ctrl+w", "focus_next_tab", "Next", show=True),
     ]
 
     show_sidebar = var(True)

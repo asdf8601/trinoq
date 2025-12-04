@@ -475,6 +475,21 @@ class QueryEditor(TextArea):
         self.text = "-- Enter your SQL query here\nSELECT 1 AS test"
 
 
+class PythonEditor(TextArea):
+    """A TextArea configured for Python script editing."""
+
+    DEFAULT_SCRIPT = "# python script\ndf = df.head()"
+
+    def __init__(self) -> None:
+        super().__init__(
+            language="python",
+            show_line_numbers=True,
+            tab_behavior="indent",
+            id="python-editor",
+        )
+        self.text = self.DEFAULT_SCRIPT
+
+
 class ResultsTable(DataTable):
     """A DataTable for displaying query results."""
 
@@ -715,6 +730,31 @@ class TrinoQApp(App):
         border: round $accent;
     }
 
+    #python-editor {
+        display: none;
+        height: 100%;
+        width: 1fr;
+        border: round $success;
+    }
+
+    #python-editor.visible {
+        display: block;
+    }
+
+    #python-editor:focus-within {
+        border: round $accent;
+    }
+
+    #editors-row {
+        height: 100%;
+        width: 100%;
+    }
+
+    #editor-container {
+        height: 100%;
+        width: 1fr;
+    }
+
     #search-popup {
         display: none;
         layer: popup;
@@ -846,33 +886,27 @@ class TrinoQApp(App):
     #vim-editor:focus {
         border: round $accent;
     }
-
-    #editor-container {
-        height: 100%;
-        width: 100%;
-    }
     """
 
     BINDINGS = [
-        Binding("ctrl+enter", "execute_query", "Run", show=True, priority=True),
+        Binding("f5", "execute_query", "Run", show=True, priority=True),
+        Binding("ctrl+e", "execute_query", "Run", show=False, priority=True),
         Binding("ctrl+s", "save_query", "Save", show=True, priority=True),
         Binding("ctrl+o", "show_queries", "Open", show=True, priority=True),
         Binding("ctrl+r", "refresh_schema", "Refresh", show=True, priority=True),
         Binding("ctrl+l", "clear_results", "Clear", show=True, priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Sidebar", show=True, priority=True),
+        Binding("ctrl+p", "toggle_python", "Python", show=True, priority=True),
         Binding("ctrl+m", "toggle_maximize", "Max", show=True, priority=True),
         Binding("ctrl+v", "open_vim", "Vim", show=True, priority=True),
         Binding("ctrl+q", "quit", "Quit", show=True, priority=True),
-        Binding("tab", "focus_next_tab", "Next", show=True, priority=True),
-        Binding("shift+tab", "focus_prev_tab", "Prev", show=True, priority=True),
         Binding("slash", "show_search", "/ Search", show=True, priority=True),
     ]
 
     show_sidebar = var(True)
+    show_python_editor = var(False)
     _maximized_panel: str | None = None  # Track which panel is maximized
     _connection: Any = None
-    _focus_order = ["schema-tree", "query-editor", "results-table"]
-    _current_focus_idx = 1  # Start on editor
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -880,9 +914,11 @@ class TrinoQApp(App):
             with Container(id="sidebar"):
                 yield SchemaTree()
             with Vertical(id="main-area"):
-                with Container(id="editor-container"):
-                    yield QueryEditor()
-                    yield VimEditor(id="vim-editor")
+                with Horizontal(id="editors-row"):
+                    with Container(id="editor-container"):
+                        yield QueryEditor()
+                        yield VimEditor(id="vim-editor")
+                    yield PythonEditor()
                 with Container(id="results-container"):
                     yield ResultsTable()
         yield StatusBar(id="status-bar")
@@ -899,6 +935,14 @@ class TrinoQApp(App):
     def watch_show_sidebar(self, show_sidebar: bool) -> None:
         """Toggle the sidebar visibility."""
         self.query_one("#sidebar").display = show_sidebar
+
+    def watch_show_python_editor(self, show_python_editor: bool) -> None:
+        """Toggle the Python editor visibility."""
+        python_editor = self.query_one(PythonEditor)
+        if show_python_editor:
+            python_editor.add_class("visible")
+        else:
+            python_editor.remove_class("visible")
 
     def _get_connection(self) -> Any:
         """Get or create a Trino connection."""
@@ -1057,6 +1101,58 @@ class TrinoQApp(App):
             self.call_from_thread(setattr, status, "status", f"Query failed: {e}")
             self.call_from_thread(self.notify, f"Query failed: {e}", severity="error")
 
+    @work(thread=True, exclusive=True, group="query")
+    def _execute_query_with_python(self, sql: str, python_script: str) -> None:
+        """Execute the SQL query with Python post-processing."""
+        import pandas as pd
+
+        from trinoq import execute
+
+        status = self.query_one(StatusBar)
+        results_table = self.query_one(ResultsTable)
+
+        self.call_from_thread(setattr, status, "is_running", True)
+        self.call_from_thread(setattr, status, "status", "Running query with Python...")
+
+        start_time = time.time()
+
+        try:
+            # Execute the SQL query
+            conn = self._get_connection()
+            df = execute(sql, engine=conn, no_cache=True, quiet=True)
+
+            # Execute the Python script with df in scope
+            # The script can modify df or create a new one
+            local_vars = {"df": df, "pd": pd}
+            exec(python_script, local_vars)
+
+            # Get the resulting df (script may have modified it)
+            df = local_vars.get("df", df)
+
+            elapsed = time.time() - start_time
+
+            # Display results
+            columns = df.columns.tolist()
+            rows = [tuple(row) for row in df.values]
+
+            self.call_from_thread(results_table.display_results, columns, rows)
+            self.call_from_thread(setattr, status, "is_running", False)
+            self.call_from_thread(
+                setattr,
+                status,
+                "status",
+                f"Python completed: {len(rows)} rows in {elapsed:.2f}s",
+            )
+            self.call_from_thread(
+                self.notify, f"Query returned {len(rows)} rows", severity="information"
+            )
+
+        except Exception as e:
+            self.call_from_thread(setattr, status, "is_running", False)
+            self.call_from_thread(results_table.display_error, str(e))
+            self.call_from_thread(setattr, status, "status", f"Error: {e}")
+            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+
     def action_execute_query(self) -> None:
         """Execute the current query."""
         editor = self.query_one(QueryEditor)
@@ -1065,6 +1161,15 @@ class TrinoQApp(App):
         if not sql or not sql.strip():
             self.notify("No query to execute", severity="warning")
             return
+
+        # Check if Python editor is visible and has content
+        if self.show_python_editor:
+            python_editor = self.query_one(PythonEditor)
+            python_script = python_editor.text.strip()
+            # Always run with Python if the editor is visible
+            if python_script:
+                self._execute_query_with_python(sql.strip(), python_script)
+                return
 
         self._execute_query(sql.strip())
 
@@ -1077,6 +1182,12 @@ class TrinoQApp(App):
     def action_toggle_sidebar(self) -> None:
         """Toggle the sidebar visibility."""
         self.show_sidebar = not self.show_sidebar
+
+    def action_toggle_python(self) -> None:
+        """Toggle the Python editor visibility."""
+        self.show_python_editor = not self.show_python_editor
+        if self.show_python_editor:
+            self.query_one(PythonEditor).focus()
 
     def action_open_vim(self) -> None:
         """Open vim to edit the current query."""
@@ -1178,19 +1289,6 @@ class TrinoQApp(App):
                 self.query_one(
                     StatusBar
                 ).status = "Results maximized (ctrl+m to restore)"
-
-    def action_focus_next_tab(self) -> None:
-        """Focus the next tab."""
-        self._current_focus_idx = (self._current_focus_idx + 1) % len(self._focus_order)
-        widget_id = self._focus_order[self._current_focus_idx]
-        self.query_one(f"#{widget_id}").focus()
-        self.notify(f"Focused: {widget_id}")
-
-    def action_focus_prev_tab(self) -> None:
-        """Focus the previous tab (gT vim-style)."""
-        self._current_focus_idx = (self._current_focus_idx - 1) % len(self._focus_order)
-        widget_id = self._focus_order[self._current_focus_idx]
-        self.query_one(f"#{widget_id}").focus()
 
     def action_refresh_schema(self) -> None:
         """Trigger schema refresh."""

@@ -369,13 +369,12 @@ class TrinoQApp(App):
         """Execute the current query."""
         editor = self.query_one(QueryEditor)
         sql = editor.selected_text if editor.selected_text else editor.text
-        sql = sql.strip()
 
-        if not sql or sql.startswith("--"):
+        if not sql or not sql.strip():
             self.notify("No query to execute", severity="warning")
             return
 
-        self._execute_query(sql)
+        self._execute_query(sql.strip())
 
     def action_clear_results(self) -> None:
         """Clear the results table."""

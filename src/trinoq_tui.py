@@ -15,6 +15,8 @@ import json
 import os
 import pty
 import struct
+import subprocess
+import tempfile
 import termios
 import time
 from pathlib import Path
@@ -114,6 +116,8 @@ class VimEditor(Widget, can_focus=True):
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
+        auto_start: bool = False,
+        initial_content: str = "",
     ) -> None:
         super().__init__(name=name, id=id, classes=classes)
         self._display = PyteDisplay([Text()])
@@ -122,15 +126,57 @@ class VimEditor(Widget, can_focus=True):
         self._fd: int | None = None
         self._p_out = None
         self._temp_file: Path | None = None
-        self._running = False
+        self._vim_running = False
         self._size_set = asyncio.Event()
         self._data_or_disconnect = None
         self._event = asyncio.Event()
         self._background_tasks: set = set()
-        self._initial_content: str = ""
+        self._initial_content: str = initial_content
+        self._auto_start = auto_start
+        self._content: str = initial_content  # Store current content for access
+        self._started = False  # Track if vim has been started
+
+    @property
+    def content(self) -> str:
+        """Get current editor content."""
+        return self._content
+
+    @content.setter
+    def content(self, value: str) -> None:
+        """Set editor content (will be used on next vim start)."""
+        self._content = value
+        self._initial_content = value
+
+    def append_text(self, text: str) -> None:
+        """Append text to the content (will be visible on next vim restart)."""
+        if self._content and not self._content.endswith("\n"):
+            self._content += "\n"
+        self._content += text
+        self._initial_content = self._content
+
+    def _start_vim(self) -> None:
+        """Start vim with current content."""
+        if self._vim_running:
+            return
+        self._initial_content = self._content
+        self._vim_running = True
+        self.focus()
+        self._run_vim_worker()
+
+    @work(exclusive=False)
+    async def _run_vim_worker(self) -> None:
+        """Worker to run both vim tasks concurrently."""
+        await asyncio.gather(self._run(), self._send())
 
     def render(self):
         return self._display
+
+    def on_mount(self) -> None:
+        """Called when widget is mounted - start vim if auto_start is set."""
+        if self._auto_start and not self._started:
+            self._started = True
+            # Start vim in a worker - it will wait for _size_set internally
+            self._start_vim()
 
     def on_resize(self, event: events.Resize) -> None:
         """Handle resize events."""
@@ -152,7 +198,7 @@ class VimEditor(Widget, can_focus=True):
 
     async def on_key(self, event: events.Key) -> None:
         """Handle key events and forward to vim."""
-        if not self._running or self._p_out is None:
+        if not self._vim_running or self._p_out is None:
             return
 
         event.stop()
@@ -176,16 +222,8 @@ class VimEditor(Widget, can_focus=True):
 
     def open_with_content(self, content: str) -> None:
         """Open vim with the given content."""
-        self._initial_content = content
-        self._running = True
-        self.focus()
-        # Start async tasks
-        task = asyncio.create_task(self._run())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        task = asyncio.create_task(self._send())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        self._content = content
+        self._start_vim()
 
     def _open_vim(self) -> int:
         """Fork and exec vim."""
@@ -245,23 +283,28 @@ class VimEditor(Widget, can_focus=True):
 
     async def _send(self) -> None:
         """Process vim output and update display."""
-        while self._running:
+        while self._vim_running:
             await self._event.wait()
             self._event.clear()
 
             if self._data_or_disconnect is None:
                 # Vim exited
-                self._running = False
+                self._vim_running = False
                 content = ""
                 if self._temp_file and self._temp_file.exists():
                     content = self._temp_file.read_text()
+                self._content = content  # Update stored content
                 self._cleanup()
                 self.post_message(self.Closed(content))
                 break
             else:
                 # Update display
                 if self._stream and self._screen:
-                    self._stream.feed(self._data_or_disconnect)
+                    try:
+                        self._stream.feed(self._data_or_disconnect)
+                    except (TypeError, KeyError, ValueError):
+                        # pyte can fail on some terminal codes, ignore
+                        pass
                     lines = []
                     for row in range(self._screen.lines):
                         text = Text()
@@ -321,7 +364,7 @@ class VimEditor(Widget, can_focus=True):
                 pass
             self._p_out = None
         self._fd = None
-        self._running = False
+        self._vim_running = False
 
 
 def load_tables_cache() -> list[dict]:
@@ -403,20 +446,6 @@ def fuzzy_match(pattern: str, text: str) -> tuple[bool, int]:
 
     matched = p_idx == len(pattern)
     return matched, score if matched else 0
-
-
-class QueryEditor(TextArea):
-    """A TextArea configured for SQL editing."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            language="sql",
-            theme="dracula",
-            show_line_numbers=True,
-            tab_behavior="indent",
-            id="query-editor",
-        )
-        self.text = "-- Enter your SQL query here\nSELECT 1 AS test"
 
 
 class PythonEditor(TextArea):
@@ -652,7 +681,11 @@ class TrinoQCommands(Provider):
                 self.app.action_toggle_maximize,
                 "Maximize/restore panel",
             ),
-            ("Open Vim", self.app.action_open_vim, "Edit in Vim"),
+            (
+                "Edit Python in Vim",
+                self.app.action_open_vim,
+                "Edit Python script in external editor",
+            ),
             ("Quit", self.app.action_quit, "Quit application"),
             ("Search Tables", self.app.action_show_search, "Search database tables"),
         ]
@@ -704,8 +737,9 @@ class TrinoQApp(App):
         grid-rows: 2fr 3fr;
     }
 
-    #query-editor {
+    #sql-editor {
         height: 100%;
+        width: 100%;
         border: round $primary;
     }
 
@@ -730,7 +764,7 @@ class TrinoQApp(App):
         border: round $accent;
     }
 
-    #query-editor:focus-within {
+    #sql-editor:focus {
         border: round $accent;
     }
 
@@ -863,7 +897,11 @@ class TrinoQApp(App):
         background: $surface;
     }
 
-    #query-editor.hidden {
+    #sql-editor.hidden {
+        display: none;
+    }
+
+    #editor-container.hidden {
         display: none;
     }
 
@@ -874,21 +912,6 @@ class TrinoQApp(App):
     #main-area.maximized {
         grid-size: 1 1;
         grid-rows: 1fr;
-    }
-
-    #vim-editor {
-        display: none;
-        width: 100%;
-        height: 100%;
-        border: round $primary;
-    }
-
-    #vim-editor.visible {
-        display: block;
-    }
-
-    #vim-editor:focus {
-        border: round $accent;
     }
     """
 
@@ -902,7 +925,6 @@ class TrinoQApp(App):
     show_python_editor = var(False)
     _maximized_panel: str | None = None  # Track which panel is maximized
     _connection: Any = None
-    _vim_target: str = "sql"  # Track which editor opened vim (sql or python)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -910,8 +932,11 @@ class TrinoQApp(App):
             with Vertical(id="main-area"):
                 with Horizontal(id="editors-row"):
                     with Container(id="editor-container"):
-                        yield QueryEditor()
-                        yield VimEditor(id="vim-editor")
+                        yield VimEditor(
+                            id="sql-editor",
+                            auto_start=True,
+                            initial_content="-- Enter your SQL query here\nSELECT 1 AS test",
+                        )
                     yield PythonEditor()
                 with Container(id="results-container"):
                     yield ResultsTable()
@@ -923,7 +948,7 @@ class TrinoQApp(App):
 
     def on_mount(self) -> None:
         """Called when the app is mounted."""
-        self.query_one(QueryEditor).focus()
+        self.query_one("#sql-editor", VimEditor).focus()
 
     def watch_show_python_editor(self, show_python_editor: bool) -> None:
         """Toggle the Python editor visibility."""
@@ -1034,8 +1059,8 @@ class TrinoQApp(App):
 
     def action_execute_query(self) -> None:
         """Execute the current query."""
-        editor = self.query_one(QueryEditor)
-        sql = editor.selected_text if editor.selected_text else editor.text
+        editor = self.query_one("#sql-editor", VimEditor)
+        sql = editor.content
 
         if not sql or not sql.strip():
             self.notify("No query to execute", severity="warning")
@@ -1065,57 +1090,37 @@ class TrinoQApp(App):
             self.query_one(PythonEditor).focus()
 
     def action_open_vim(self) -> None:
-        """Open vim to edit the current query or script."""
-        vim_editor = self.query_one(VimEditor)
+        """Open vim to edit the Python script."""
+        # Only works for Python editor since SQL already uses Vim
+        python_editor = self.query_one(PythonEditor)
 
-        # Determine target based on focus
-        focused = self.focused
-        if focused and focused.id == "python-editor":
-            self._vim_target = "python"
-            source_editor = self.query_one(PythonEditor)
-            source_editor.add_class("hidden")
-            # Also hide QueryEditor so Vim takes over the main container
-            self.query_one(QueryEditor).add_class("hidden")
-        else:
-            self._vim_target = "sql"
-            source_editor = self.query_one(QueryEditor)
-            source_editor.add_class("hidden")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write(python_editor.text)
+            temp_path = f.name
 
-        vim_editor.add_class("visible")
-
-        # Open vim with current content
-        vim_editor.open_with_content(source_editor.text)
-        self.query_one(
-            StatusBar
-        ).status = (
-            f"Editing {self._vim_target} in $EDITOR... (:wq to save, :q! to cancel)"
-        )
+        editor = os.environ.get("EDITOR", "vim")
+        try:
+            subprocess.run([editor, temp_path], check=True)
+            with open(temp_path) as f:
+                python_editor.text = f.read()
+        except Exception as e:
+            self.notify(f"Editor failed: {e}", severity="error")
+        finally:
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
 
     def on_vim_editor_closed(self, event: VimEditor.Closed) -> None:
-        """Handle vim editor closing."""
-        vim_editor = self.query_one(VimEditor)
-
-        # Restore normal layout
-        vim_editor.remove_class("visible")
-
-        if self._vim_target == "python":
-            editor = self.query_one(PythonEditor)
-            editor.text = event.content
-            editor.remove_class("hidden")
-            # Restore QueryEditor
-            self.query_one(QueryEditor).remove_class("hidden")
-            editor.focus()
-        else:
-            editor = self.query_one(QueryEditor)
-            editor.text = event.content
-            editor.remove_class("hidden")
-            editor.focus()
-
-        self.query_one(StatusBar).status = "Returned from editor"
+        """Handle vim editor closing - restart vim for SQL editor."""
+        sql_editor = self.query_one("#sql-editor", VimEditor)
+        # Content is already stored in the VimEditor, restart it
+        sql_editor._start_vim()
+        self.query_one(StatusBar).status = "Ready"
 
     def action_focus_editor(self) -> None:
         """Focus the query editor."""
-        self.query_one(QueryEditor).focus()
+        self.query_one("#sql-editor", VimEditor).focus()
 
     def action_focus_results(self) -> None:
         """Focus the results table."""
@@ -1123,7 +1128,7 @@ class TrinoQApp(App):
 
     def action_toggle_maximize(self) -> None:
         """Toggle maximize for the focused panel (editor or results)."""
-        editor = self.query_one(QueryEditor)
+        editor = self.query_one("#editor-container")
         results = self.query_one("#results-container")
         main_area = self.query_one("#main-area")
 
@@ -1134,7 +1139,7 @@ class TrinoQApp(App):
 
         # Find if we're in editor or results
         current_panel = None
-        if focused.id == "query-editor" or focused.has_class("text-area"):
+        if focused.id == "sql-editor" or focused.has_class("text-area"):
             current_panel = "editor"
         elif focused.id == "results-table" or focused.id == "results-container":
             current_panel = "results"
@@ -1142,7 +1147,7 @@ class TrinoQApp(App):
             # Check ancestors
             node = focused
             while node is not None:
-                if node.id == "query-editor":
+                if node.id == "sql-editor" or node.id == "editor-container":
                     current_panel = "editor"
                     break
                 elif node.id == "results-container":
@@ -1204,12 +1209,12 @@ class TrinoQApp(App):
         """Hide the table search popup."""
         popup = self.query_one(SearchPopup)
         popup.remove_class("visible")
-        self.query_one(QueryEditor).focus()
+        self.query_one("#sql-editor", VimEditor).focus()
 
     def action_save_query(self) -> None:
         """Show the save query popup."""
-        editor = self.query_one(QueryEditor)
-        sql = editor.text.strip()
+        editor = self.query_one("#sql-editor", VimEditor)
+        sql = editor.content.strip()
 
         if not sql:
             self.notify("No query to save", severity="warning")
@@ -1224,7 +1229,7 @@ class TrinoQApp(App):
         """Hide the save query popup."""
         popup = self.query_one(SaveQueryPopup)
         popup.remove_class("visible")
-        self.query_one(QueryEditor).focus()
+        self.query_one("#sql-editor", VimEditor).focus()
 
     def _do_save_query(self, name: str, sql: str) -> None:
         """Actually save the query with the given name."""
@@ -1247,7 +1252,7 @@ class TrinoQApp(App):
         """Hide the queries popup."""
         popup = self.query_one(QueriesPopup)
         popup.remove_class("visible")
-        self.query_one(QueryEditor).focus()
+        self.query_one("#sql-editor", VimEditor).focus()
 
     def action_delete_selected_query(self) -> None:
         """Delete the selected query."""
@@ -1268,16 +1273,16 @@ class TrinoQApp(App):
             if event.option_index < len(popup.matches):
                 match = popup.matches[event.option_index]
                 full_name = f"{match['catalog']}.{match['schema']}.{match['name']}"
-                editor = self.query_one(QueryEditor)
-                editor.insert(full_name)
+                editor = self.query_one("#sql-editor", VimEditor)
+                editor.append_text(full_name)
             self.action_hide_search()
 
         elif event.option_list.id == "queries-list":
             popup = self.query_one(QueriesPopup)
             if event.option_index < len(popup.queries):
                 query = popup.queries[event.option_index]
-                editor = self.query_one(QueryEditor)
-                editor.text = query.get("sql", "")
+                editor = self.query_one("#sql-editor", VimEditor)
+                editor.content = query.get("sql", "")
                 self.notify(f"Loaded: {query.get('name', 'query')}")
             self.action_hide_queries()
 
@@ -1328,8 +1333,8 @@ class TrinoQApp(App):
             ):
                 match = popup.matches[results.highlighted]
                 full_name = f"{match['catalog']}.{match['schema']}.{match['name']}"
-                editor = self.query_one(QueryEditor)
-                editor.insert(full_name)
+                editor = self.query_one("#sql-editor", VimEditor)
+                editor.append_text(full_name)
             self.action_hide_search()
 
         elif event.input.id == "queries-filter":
@@ -1343,8 +1348,8 @@ class TrinoQApp(App):
                     query_idx = int(option.id)
                     if query_idx < len(popup.queries):
                         query = popup.queries[query_idx]
-                        editor = self.query_one(QueryEditor)
-                        editor.text = query.get("sql", "")
+                        editor = self.query_one("#sql-editor", VimEditor)
+                        editor.content = query.get("sql", "")
                         self.notify(f"Loaded: {query.get('name', 'query')}")
             self.action_hide_queries()
 

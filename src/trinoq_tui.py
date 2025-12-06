@@ -25,6 +25,7 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import Hit, Hits, Provider
 from textual.containers import Container, Horizontal, Vertical
 from textual.message import Message
 from textual.reactive import reactive, var
@@ -597,6 +598,23 @@ class StatusBar(Static):
         return f" {self.status}"
 
 
+class TrinoQCommands(Provider):
+    """Command provider for TrinoQ."""
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+
+        # Toggle Python Editor
+        score = matcher.match("Toggle Python Editor")
+        if score > 0:
+            yield Hit(
+                score,
+                matcher.highlight("Toggle Python Editor"),
+                lambda: self.app.action_toggle_python(),
+                help="Show/hide Python script editor",
+            )
+
+
 class TrinoQApp(App):
     """A TUI for running Trino queries."""
 
@@ -809,15 +827,17 @@ class TrinoQApp(App):
     BINDINGS = [
         Binding("f5", "execute_query", "Run", show=True, priority=True),
         Binding("ctrl+e", "execute_query", "Run", show=False, priority=True),
-        Binding("ctrl+s", "save_query", "Save", show=True, priority=True),
-        Binding("ctrl+o", "show_queries", "Open", show=True, priority=True),
-        Binding("ctrl+l", "clear_results", "Clear", show=True, priority=True),
-        Binding("ctrl+p", "toggle_python", "Python", show=True, priority=True),
-        Binding("ctrl+m", "toggle_maximize", "Max", show=True, priority=True),
-        Binding("ctrl+v", "open_vim", "Vim", show=True, priority=True),
-        Binding("ctrl+q", "quit", "Quit", show=True, priority=True),
-        Binding("slash", "show_search", "/ Search", show=True, priority=True),
+        Binding("ctrl+s", "save_query", "Save", show=False, priority=True),
+        Binding("ctrl+o", "show_queries", "Open", show=False, priority=True),
+        Binding("ctrl+l", "clear_results", "Clear", show=False, priority=True),
+        Binding("ctrl+p", "command_palette", "Palette", show=True, priority=True),
+        Binding("ctrl+m", "toggle_maximize", "Max", show=False, priority=True),
+        Binding("ctrl+v", "open_vim", "Vim", show=False, priority=True),
+        Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
+        Binding("slash", "show_search", "/ Search", show=False, priority=True),
     ]
+
+    COMMANDS = {TrinoQCommands}
 
     show_python_editor = var(False)
     _maximized_panel: str | None = None  # Track which panel is maximized

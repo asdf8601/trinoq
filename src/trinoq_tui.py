@@ -911,7 +911,7 @@ class TrinoQApp(App):
 
     COMMANDS = {TrinoQCommands}
 
-    show_python_editor = var(False)
+    show_python_editor = var(True)
     _maximized_panel: str | None = None  # Track which panel is maximized
     _connection: Any = None
 
@@ -924,12 +924,13 @@ class TrinoQApp(App):
                         yield VimEditor(
                             id="sql-editor",
                             auto_start=True,
-                            initial_content="-- Enter your SQL query here\nSELECT 1 AS test",
+                            initial_content="-- SQL query\nselect 1",
                         )
                     yield VimEditor(
                         id="python-editor",
-                        auto_start=False,
-                        initial_content="# python script\ndf = df.head()",
+                        auto_start=True,
+                        classes="visible",
+                        initial_content="# python script\n# df = df * 100",
                     )
                 with Container(id="results-container"):
                     yield ResultsTable()

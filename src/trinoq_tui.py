@@ -856,7 +856,7 @@ class TrinoQApp(App):
 
     BINDINGS = [
         Binding("f5", "execute_query", "Run", show=True, priority=True),
-        Binding("ctrl+p", "command_palette", "Palette", show=False, priority=True),
+        Binding("ctrl+p", "command_palette", "Menu", show=True, priority=True),
         Binding("slash", "show_search", "/ Search", show=False, priority=True),
     ]
 

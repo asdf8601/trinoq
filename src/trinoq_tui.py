@@ -464,6 +464,19 @@ class SearchPopup(Container):
         yield Input(placeholder="Search tables (fuzzy)...", id="search-input")
         yield OptionList(id="search-results")
 
+    def on_key(self, event: events.Key) -> None:
+        """Handle navigation keys."""
+        if event.key == "up":
+            self.query_one("#search-results", OptionList).action_cursor_up()
+            event.stop()
+        elif event.key == "down":
+            self.query_one("#search-results", OptionList).action_cursor_down()
+            event.stop()
+        elif event.key == "enter":
+            # Propagate to allow on_input_submitted if focused on input,
+            # but we will handle selection in on_input_submitted
+            pass
+
     def action_cancel_search(self) -> None:
         self.app.action_hide_search()
 
@@ -516,6 +529,17 @@ class QueriesPopup(Container):
         yield Static("Saved Queries (Enter=load, Del=delete)", id="queries-title")
         yield Input(placeholder="Filter queries...", id="queries-filter")
         yield OptionList(id="queries-list")
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle navigation keys."""
+        if event.key == "up":
+            self.query_one("#queries-list", OptionList).action_cursor_up()
+            event.stop()
+        elif event.key == "down":
+            self.query_one("#queries-list", OptionList).action_cursor_down()
+            event.stop()
+        elif event.key == "enter":
+            pass
 
     def action_cancel(self) -> None:
         self.app.action_hide_queries()
@@ -1261,6 +1285,35 @@ class TrinoQApp(App):
                 self.action_hide_save_query()
             elif not name:
                 self.notify("Please enter a name", severity="warning")
+
+        elif event.input.id == "search-input":
+            # Select from search results
+            popup = self.query_one(SearchPopup)
+            results = popup.query_one("#search-results", OptionList)
+            if results.highlighted is not None and results.highlighted < len(
+                popup.matches
+            ):
+                match = popup.matches[results.highlighted]
+                full_name = f"{match['catalog']}.{match['schema']}.{match['name']}"
+                editor = self.query_one(QueryEditor)
+                editor.insert(full_name)
+            self.action_hide_search()
+
+        elif event.input.id == "queries-filter":
+            # Select from queries
+            popup = self.query_one(QueriesPopup)
+            results = popup.query_one("#queries-list", OptionList)
+
+            if results.highlighted is not None:
+                option = results.get_option_at_index(results.highlighted)
+                if option and option.id:
+                    query_idx = int(option.id)
+                    if query_idx < len(popup.queries):
+                        query = popup.queries[query_idx]
+                        editor = self.query_one(QueryEditor)
+                        editor.text = query.get("sql", "")
+                        self.notify(f"Loaded: {query.get('name', 'query')}")
+            self.action_hide_queries()
 
     @work(thread=True, exclusive=True, group="load_tables")
     def _load_all_tables(self) -> None:

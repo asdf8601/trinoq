@@ -403,6 +403,7 @@ class QueryEditor(TextArea):
     def __init__(self) -> None:
         super().__init__(
             language="sql",
+            theme="dracula",
             show_line_numbers=True,
             tab_behavior="indent",
             id="query-editor",
@@ -418,6 +419,7 @@ class PythonEditor(TextArea):
     def __init__(self) -> None:
         super().__init__(
             language="python",
+            theme="dracula",
             show_line_numbers=True,
             tab_behavior="indent",
             id="python-editor",

@@ -601,10 +601,9 @@ class StatusBar(Static):
 class TrinoQCommands(Provider):
     """Command provider for TrinoQ."""
 
-    async def search(self, query: str) -> Hits:
-        matcher = self.matcher(query)
-
-        commands = [
+    @property
+    def _commands(self) -> list[tuple[str, Any, str]]:
+        return [
             ("Run Query", self.app.action_execute_query, "Execute current SQL query"),
             (
                 "Toggle Python Editor",
@@ -624,11 +623,22 @@ class TrinoQCommands(Provider):
             ("Search Tables", self.app.action_show_search, "Search database tables"),
         ]
 
-        for name, callback, help_text in commands:
+    async def discover(self) -> Hits:
+        for name, callback, help_text in self._commands:
+            yield Hit(
+                1.0,
+                name,
+                callback,
+                help=help_text,
+            )
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        for name, callback, help_text in self._commands:
             score = matcher.match(name)
-            if score > 0 or not query:
+            if score > 0:
                 yield Hit(
-                    score if score > 0 else 1.0,
+                    score,
                     matcher.highlight(name),
                     callback,
                     help=help_text,

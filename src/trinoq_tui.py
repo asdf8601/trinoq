@@ -15,8 +15,6 @@ import json
 import os
 import pty
 import struct
-import subprocess
-import tempfile
 import termios
 import time
 from pathlib import Path
@@ -39,7 +37,6 @@ from textual.widgets import (
     Input,
     OptionList,
     Static,
-    TextArea,
 )
 from textual.widgets.option_list import Option
 
@@ -47,7 +44,6 @@ from textual.widgets.option_list import Option
 CACHE_DIR = Path("/tmp/trinoq")
 TABLES_CACHE_FILE = CACHE_DIR / "tables_cache.json"
 QUERIES_FILE = CACHE_DIR / "saved_queries.json"
-VIM_TEMP_FILE = CACHE_DIR / "vim_edit.sql"
 CACHE_MAX_AGE_SECONDS = 3600  # Refresh cache if older than 1 hour
 
 # Key mappings for terminal
@@ -106,8 +102,9 @@ class VimEditor(Widget, can_focus=True):
     class Closed(Message):
         """Message sent when vim exits."""
 
-        def __init__(self, content: str) -> None:
+        def __init__(self, content: str, editor_id: str | None = None) -> None:
             self.content = content
+            self.editor_id = editor_id
             super().__init__()
 
     def __init__(
@@ -139,6 +136,9 @@ class VimEditor(Widget, can_focus=True):
     @property
     def content(self) -> str:
         """Get current editor content."""
+        # If vim is running, read from temp file (auto-saved on InsertLeave)
+        if self._vim_running and self._temp_file and self._temp_file.exists():
+            return self._temp_file.read_text()
         return self._content
 
     @content.setter
@@ -228,7 +228,10 @@ class VimEditor(Widget, can_focus=True):
     def _open_vim(self) -> int:
         """Fork and exec vim."""
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        self._temp_file = VIM_TEMP_FILE
+        # Use unique temp file per editor based on widget id
+        editor_id = self.id or "default"
+        ext = ".py" if "python" in editor_id else ".sql"
+        self._temp_file = CACHE_DIR / f"vim_edit_{editor_id}{ext}"
         self._temp_file.write_text(self._initial_content)
 
         pid, fd = pty.fork()
@@ -244,7 +247,14 @@ class VimEditor(Widget, can_focus=True):
                 LINES=str(nrow),
             )
             env.update(os.environ)
-            os.execvpe(editor, [editor, str(self._temp_file)], env)
+            # Add autocommand to save on leaving insert mode
+            vim_args = [
+                editor,
+                "-c",
+                "autocmd InsertLeave * silent! write",
+                str(self._temp_file),
+            ]
+            os.execvpe(editor, vim_args, env)
         return fd
 
     async def _run(self) -> None:
@@ -295,7 +305,7 @@ class VimEditor(Widget, can_focus=True):
                     content = self._temp_file.read_text()
                 self._content = content  # Update stored content
                 self._cleanup()
-                self.post_message(self.Closed(content))
+                self.post_message(self.Closed(content, editor_id=self.id))
                 break
             else:
                 # Update display
@@ -446,22 +456,6 @@ def fuzzy_match(pattern: str, text: str) -> tuple[bool, int]:
 
     matched = p_idx == len(pattern)
     return matched, score if matched else 0
-
-
-class PythonEditor(TextArea):
-    """A TextArea configured for Python script editing."""
-
-    DEFAULT_SCRIPT = "# python script\ndf = df.head()"
-
-    def __init__(self) -> None:
-        super().__init__(
-            language="python",
-            theme="dracula",
-            show_line_numbers=True,
-            tab_behavior="indent",
-            id="python-editor",
-        )
-        self.text = self.DEFAULT_SCRIPT
 
 
 class ResultsTable(DataTable):
@@ -680,11 +674,6 @@ class TrinoQCommands(Provider):
                 "Toggle Maximize",
                 self.app.action_toggle_maximize,
                 "Maximize/restore panel",
-            ),
-            (
-                "Edit Python in Vim",
-                self.app.action_open_vim,
-                "Edit Python script in external editor",
             ),
             ("Quit", self.app.action_quit, "Quit application"),
             ("Search Tables", self.app.action_show_search, "Search database tables"),
@@ -937,7 +926,11 @@ class TrinoQApp(App):
                             auto_start=True,
                             initial_content="-- Enter your SQL query here\nSELECT 1 AS test",
                         )
-                    yield PythonEditor()
+                    yield VimEditor(
+                        id="python-editor",
+                        auto_start=False,
+                        initial_content="# python script\ndf = df.head()",
+                    )
                 with Container(id="results-container"):
                     yield ResultsTable()
         yield StatusBar(id="status-bar")
@@ -952,9 +945,13 @@ class TrinoQApp(App):
 
     def watch_show_python_editor(self, show_python_editor: bool) -> None:
         """Toggle the Python editor visibility."""
-        python_editor = self.query_one(PythonEditor)
+        python_editor = self.query_one("#python-editor", VimEditor)
         if show_python_editor:
             python_editor.add_class("visible")
+            # Start vim if not already started
+            if not python_editor._started:
+                python_editor._started = True
+                python_editor._start_vim()
         else:
             python_editor.remove_class("visible")
 
@@ -1027,11 +1024,12 @@ class TrinoQApp(App):
 
             # Execute the Python script with df in scope
             # The script can modify df or create a new one
-            local_vars = {"df": df, "pd": pd}
-            exec(python_script, local_vars)
+            # Use same dict for globals and locals so assignments work correctly
+            exec_globals = {"df": df, "pd": pd, "__builtins__": __builtins__}
+            exec(python_script, exec_globals, exec_globals)
 
             # Get the resulting df (script may have modified it)
-            df = local_vars.get("df", df)
+            df = exec_globals.get("df", df)
 
             elapsed = time.time() - start_time
 
@@ -1068,8 +1066,8 @@ class TrinoQApp(App):
 
         # Check if Python editor is visible and has content
         if self.show_python_editor:
-            python_editor = self.query_one(PythonEditor)
-            python_script = python_editor.text.strip()
+            python_editor = self.query_one("#python-editor", VimEditor)
+            python_script = python_editor.content.strip()
             # Always run with Python if the editor is visible
             if python_script:
                 self._execute_query_with_python(sql.strip(), python_script)
@@ -1087,35 +1085,17 @@ class TrinoQApp(App):
         """Toggle the Python editor visibility."""
         self.show_python_editor = not self.show_python_editor
         if self.show_python_editor:
-            self.query_one(PythonEditor).focus()
-
-    def action_open_vim(self) -> None:
-        """Open vim to edit the Python script."""
-        # Only works for Python editor since SQL already uses Vim
-        python_editor = self.query_one(PythonEditor)
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(python_editor.text)
-            temp_path = f.name
-
-        editor = os.environ.get("EDITOR", "vim")
-        try:
-            subprocess.run([editor, temp_path], check=True)
-            with open(temp_path) as f:
-                python_editor.text = f.read()
-        except Exception as e:
-            self.notify(f"Editor failed: {e}", severity="error")
-        finally:
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
+            self.query_one("#python-editor", VimEditor).focus()
 
     def on_vim_editor_closed(self, event: VimEditor.Closed) -> None:
-        """Handle vim editor closing - restart vim for SQL editor."""
-        sql_editor = self.query_one("#sql-editor", VimEditor)
-        # Content is already stored in the VimEditor, restart it
-        sql_editor._start_vim()
+        """Handle vim editor closing - restart vim for the editor."""
+        # Restart vim for whichever editor was closed
+        if event.editor_id == "sql-editor":
+            sql_editor = self.query_one("#sql-editor", VimEditor)
+            sql_editor._start_vim()
+        elif event.editor_id == "python-editor":
+            python_editor = self.query_one("#python-editor", VimEditor)
+            python_editor._start_vim()
         self.query_one(StatusBar).status = "Ready"
 
     def action_focus_editor(self) -> None:

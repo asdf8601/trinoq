@@ -856,14 +856,7 @@ class TrinoQApp(App):
 
     BINDINGS = [
         Binding("f5", "execute_query", "Run", show=True, priority=True),
-        Binding("ctrl+e", "execute_query", "Run", show=False, priority=True),
-        Binding("ctrl+s", "save_query", "Save", show=False, priority=True),
-        Binding("ctrl+o", "show_queries", "Open", show=False, priority=True),
-        Binding("ctrl+l", "clear_results", "Clear", show=False, priority=True),
         Binding("ctrl+p", "command_palette", "Palette", show=False, priority=True),
-        Binding("ctrl+m", "toggle_maximize", "Max", show=False, priority=True),
-        Binding("ctrl+v", "open_vim", "Vim", show=False, priority=True),
-        Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
         Binding("slash", "show_search", "/ Search", show=False, priority=True),
     ]
 

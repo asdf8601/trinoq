@@ -745,6 +745,10 @@ class TrinoQApp(App):
         display: block;
     }
 
+    #python-editor.hidden {
+        display: none;
+    }
+
     #python-editor:focus-within {
         border: round $accent;
     }
@@ -899,6 +903,7 @@ class TrinoQApp(App):
     show_python_editor = var(False)
     _maximized_panel: str | None = None  # Track which panel is maximized
     _connection: Any = None
+    _vim_target: str = "sql"  # Track which editor opened vim (sql or python)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1061,32 +1066,51 @@ class TrinoQApp(App):
             self.query_one(PythonEditor).focus()
 
     def action_open_vim(self) -> None:
-        """Open vim to edit the current query."""
-        editor = self.query_one(QueryEditor)
+        """Open vim to edit the current query or script."""
         vim_editor = self.query_one(VimEditor)
 
-        # Hide editor, show VimEditor in its place
-        editor.add_class("hidden")
+        # Determine target based on focus
+        focused = self.focused
+        if focused and focused.id == "python-editor":
+            self._vim_target = "python"
+            source_editor = self.query_one(PythonEditor)
+            source_editor.add_class("hidden")
+            # Also hide QueryEditor so Vim takes over the main container
+            self.query_one(QueryEditor).add_class("hidden")
+        else:
+            self._vim_target = "sql"
+            source_editor = self.query_one(QueryEditor)
+            source_editor.add_class("hidden")
+
         vim_editor.add_class("visible")
 
         # Open vim with current content
-        vim_editor.open_with_content(editor.text)
+        vim_editor.open_with_content(source_editor.text)
         self.query_one(
             StatusBar
-        ).status = "Editing in $EDITOR... (:wq to save, :q! to cancel)"
+        ).status = (
+            f"Editing {self._vim_target} in $EDITOR... (:wq to save, :q! to cancel)"
+        )
 
     def on_vim_editor_closed(self, event: VimEditor.Closed) -> None:
         """Handle vim editor closing."""
-        editor = self.query_one(QueryEditor)
         vim_editor = self.query_one(VimEditor)
-
-        # Update editor with content from vim
-        editor.text = event.content
 
         # Restore normal layout
         vim_editor.remove_class("visible")
-        editor.remove_class("hidden")
-        editor.focus()
+
+        if self._vim_target == "python":
+            editor = self.query_one(PythonEditor)
+            editor.text = event.content
+            editor.remove_class("hidden")
+            # Restore QueryEditor
+            self.query_one(QueryEditor).remove_class("hidden")
+            editor.focus()
+        else:
+            editor = self.query_one(QueryEditor)
+            editor.text = event.content
+            editor.remove_class("hidden")
+            editor.focus()
 
         self.query_one(StatusBar).status = "Returned from editor"
 

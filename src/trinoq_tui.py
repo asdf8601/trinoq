@@ -626,9 +626,9 @@ class TrinoQCommands(Provider):
 
         for name, callback, help_text in commands:
             score = matcher.match(name)
-            if score > 0:
+            if score > 0 or not query:
                 yield Hit(
-                    score,
+                    score if score > 0 else 1.0,
                     matcher.highlight(name),
                     callback,
                     help=help_text,

@@ -604,15 +604,35 @@ class TrinoQCommands(Provider):
     async def search(self, query: str) -> Hits:
         matcher = self.matcher(query)
 
-        # Toggle Python Editor
-        score = matcher.match("Toggle Python Editor")
-        if score > 0:
-            yield Hit(
-                score,
-                matcher.highlight("Toggle Python Editor"),
-                lambda: self.app.action_toggle_python(),
-                help="Show/hide Python script editor",
-            )
+        commands = [
+            ("Run Query", self.app.action_execute_query, "Execute current SQL query"),
+            (
+                "Toggle Python Editor",
+                self.app.action_toggle_python,
+                "Show/hide Python script editor",
+            ),
+            ("Save Query", self.app.action_save_query, "Save current query"),
+            ("Open Queries", self.app.action_show_queries, "Open saved queries"),
+            ("Clear Results", self.app.action_clear_results, "Clear results table"),
+            (
+                "Toggle Maximize",
+                self.app.action_toggle_maximize,
+                "Maximize/restore panel",
+            ),
+            ("Open Vim", self.app.action_open_vim, "Edit in Vim"),
+            ("Quit", self.app.action_quit, "Quit application"),
+            ("Search Tables", self.app.action_show_search, "Search database tables"),
+        ]
+
+        for name, callback, help_text in commands:
+            score = matcher.match(name)
+            if score > 0:
+                yield Hit(
+                    score,
+                    matcher.highlight(name),
+                    callback,
+                    help=help_text,
+                )
 
 
 class TrinoQApp(App):
@@ -830,7 +850,7 @@ class TrinoQApp(App):
         Binding("ctrl+s", "save_query", "Save", show=False, priority=True),
         Binding("ctrl+o", "show_queries", "Open", show=False, priority=True),
         Binding("ctrl+l", "clear_results", "Clear", show=False, priority=True),
-        Binding("ctrl+p", "command_palette", "Palette", show=True, priority=True),
+        Binding("ctrl+p", "command_palette", "Palette", show=False, priority=True),
         Binding("ctrl+m", "toggle_maximize", "Max", show=False, priority=True),
         Binding("ctrl+v", "open_vim", "Vim", show=False, priority=True),
         Binding("ctrl+q", "quit", "Quit", show=False, priority=True),

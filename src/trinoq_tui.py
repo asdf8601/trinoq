@@ -37,10 +37,8 @@ from textual.widgets import (
     OptionList,
     Static,
     TextArea,
-    Tree,
 )
 from textual.widgets.option_list import Option
-from textual.widgets.tree import TreeNode
 
 # Cache file for tables
 CACHE_DIR = Path("/tmp/trinoq")
@@ -398,70 +396,6 @@ def fuzzy_match(pattern: str, text: str) -> tuple[bool, int]:
     return matched, score if matched else 0
 
 
-class SchemaTree(Tree):
-    """A tree widget for browsing database schema (catalogs/schemas/tables)."""
-
-    def __init__(self) -> None:
-        super().__init__("Catalogs", id="schema-tree")
-        self.show_root = True
-        self._all_tables: list[dict] = []  # Store all tables for filtering
-
-    def populate_catalogs(self, catalogs: list[str]) -> None:
-        """Populate the tree with catalog names."""
-        self.clear()
-        for catalog in sorted(catalogs):
-            node = self.root.add(
-                f"[bold]{catalog}[/bold]", data={"type": "catalog", "name": catalog}
-            )
-            # Add placeholder for lazy loading
-            node.add_leaf("[dim]Loading...[/dim]", data={"type": "placeholder"})
-
-    def populate_schemas(self, catalog_node: TreeNode, schemas: list[str]) -> None:
-        """Populate a catalog node with schema names."""
-        # Remove placeholder
-        catalog_node.remove_children()
-        for schema in sorted(schemas):
-            catalog_name = catalog_node.data["name"]
-            node = catalog_node.add(
-                f"[cyan]{schema}[/cyan]",
-                data={"type": "schema", "name": schema, "catalog": catalog_name},
-            )
-            # Add placeholder for lazy loading
-            node.add_leaf("[dim]Loading...[/dim]", data={"type": "placeholder"})
-
-    def populate_tables(self, schema_node: TreeNode, tables: list[str]) -> None:
-        """Populate a schema node with table names."""
-        # Remove placeholder
-        schema_node.remove_children()
-        catalog = schema_node.data["catalog"]
-        schema_name = schema_node.data["name"]
-        for table in sorted(tables):
-            table_data = {
-                "type": "table",
-                "name": table,
-                "schema": schema_name,
-                "catalog": catalog,
-            }
-            schema_node.add_leaf(f"[green]{table}[/green]", data=table_data)
-            # Store for filtering
-            self._all_tables.append(table_data)
-
-    def get_all_tables(self) -> list[dict]:
-        """Get all loaded tables."""
-        return self._all_tables
-
-    def find_table_node(self, catalog: str, schema: str, table: str) -> TreeNode | None:
-        """Find a table node by its full path."""
-        for catalog_node in self.root.children:
-            if catalog_node.data and catalog_node.data.get("name") == catalog:
-                for schema_node in catalog_node.children:
-                    if schema_node.data and schema_node.data.get("name") == schema:
-                        for table_node in schema_node.children:
-                            if table_node.data and table_node.data.get("name") == table:
-                                return table_node
-        return None
-
-
 class QueryEditor(TextArea):
     """A TextArea configured for SQL editing."""
 
@@ -680,18 +614,6 @@ class TrinoQApp(App):
         height: 1fr;
     }
 
-    #sidebar {
-        width: 30;
-        height: 100%;
-        border-right: solid $primary;
-    }
-
-    #schema-tree {
-        width: 100%;
-        height: 100%;
-        scrollbar-gutter: stable;
-    }
-
     #main-area {
         width: 1fr;
         height: 100%;
@@ -863,10 +785,6 @@ class TrinoQApp(App):
         display: none;
     }
 
-    #sidebar.hidden {
-        display: none;
-    }
-
     #main-area.maximized {
         grid-size: 1 1;
         grid-rows: 1fr;
@@ -893,9 +811,7 @@ class TrinoQApp(App):
         Binding("ctrl+e", "execute_query", "Run", show=False, priority=True),
         Binding("ctrl+s", "save_query", "Save", show=True, priority=True),
         Binding("ctrl+o", "show_queries", "Open", show=True, priority=True),
-        Binding("ctrl+r", "refresh_schema", "Refresh", show=True, priority=True),
         Binding("ctrl+l", "clear_results", "Clear", show=True, priority=True),
-        Binding("ctrl+b", "toggle_sidebar", "Sidebar", show=True, priority=True),
         Binding("ctrl+p", "toggle_python", "Python", show=True, priority=True),
         Binding("ctrl+m", "toggle_maximize", "Max", show=True, priority=True),
         Binding("ctrl+v", "open_vim", "Vim", show=True, priority=True),
@@ -903,7 +819,6 @@ class TrinoQApp(App):
         Binding("slash", "show_search", "/ Search", show=True, priority=True),
     ]
 
-    show_sidebar = var(True)
     show_python_editor = var(False)
     _maximized_panel: str | None = None  # Track which panel is maximized
     _connection: Any = None
@@ -911,8 +826,6 @@ class TrinoQApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="content-area"):
-            with Container(id="sidebar"):
-                yield SchemaTree()
             with Vertical(id="main-area"):
                 with Horizontal(id="editors-row"):
                     with Container(id="editor-container"):
@@ -930,11 +843,6 @@ class TrinoQApp(App):
     def on_mount(self) -> None:
         """Called when the app is mounted."""
         self.query_one(QueryEditor).focus()
-        self._load_catalogs()
-
-    def watch_show_sidebar(self, show_sidebar: bool) -> None:
-        """Toggle the sidebar visibility."""
-        self.query_one("#sidebar").display = show_sidebar
 
     def watch_show_python_editor(self, show_python_editor: bool) -> None:
         """Toggle the Python editor visibility."""
@@ -951,116 +859,6 @@ class TrinoQApp(App):
 
             self._connection = create_connection()
         return self._connection
-
-    @work(thread=True, exclusive=True, group="schema")
-    def _load_catalogs(self) -> None:
-        """Load catalogs in a background thread."""
-        import pandas as pd
-
-        status = self.query_one(StatusBar)
-        tree = self.query_one(SchemaTree)
-
-        self.call_from_thread(setattr, status, "status", "Loading catalogs...")
-
-        try:
-            conn = self._get_connection()
-            df = pd.read_sql("SHOW CATALOGS", conn)
-            catalogs = df.iloc[:, 0].tolist()
-
-            self.call_from_thread(tree.populate_catalogs, catalogs)
-            self.call_from_thread(
-                setattr, status, "status", f"Loaded {len(catalogs)} catalogs"
-            )
-        except Exception as e:
-            self.call_from_thread(setattr, status, "status", f"Error: {e}")
-            self.call_from_thread(
-                self.notify, f"Failed to load catalogs: {e}", severity="error"
-            )
-
-    @work(thread=True, group="fetch")
-    def _load_schemas(self, node: TreeNode, catalog: str) -> None:
-        """Load schemas for a catalog in a background thread."""
-        import pandas as pd
-
-        status = self.query_one(StatusBar)
-        tree = self.query_one(SchemaTree)
-
-        self.call_from_thread(
-            setattr, status, "status", f"Loading schemas for {catalog}..."
-        )
-
-        try:
-            conn = self._get_connection()
-            df = pd.read_sql(f"SHOW SCHEMAS FROM {catalog}", conn)
-            schemas = df.iloc[:, 0].tolist()
-
-            self.call_from_thread(tree.populate_schemas, node, schemas)
-            self.call_from_thread(
-                setattr, status, "status", f"Loaded {len(schemas)} schemas"
-            )
-        except Exception as e:
-            self.call_from_thread(setattr, status, "status", f"Error: {e}")
-
-    @work(thread=True, group="fetch")
-    def _load_tables(self, node: TreeNode, catalog: str, schema: str) -> None:
-        """Load tables for a schema in a background thread."""
-        import pandas as pd
-
-        status = self.query_one(StatusBar)
-        tree = self.query_one(SchemaTree)
-
-        self.call_from_thread(
-            setattr, status, "status", f"Loading tables for {catalog}.{schema}..."
-        )
-
-        try:
-            conn = self._get_connection()
-            df = pd.read_sql(f"SHOW TABLES FROM {catalog}.{schema}", conn)
-            tables = df.iloc[:, 0].tolist()
-
-            self.call_from_thread(tree.populate_tables, node, tables)
-            self.call_from_thread(
-                setattr, status, "status", f"Loaded {len(tables)} tables"
-            )
-        except Exception as e:
-            self.call_from_thread(setattr, status, "status", f"Error: {e}")
-
-    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
-        """Handle tree node expansion for lazy loading."""
-        node = event.node
-        if node.data is None:
-            return
-
-        node_type = node.data.get("type")
-
-        # Check if it has a placeholder child (needs loading)
-        has_placeholder = (
-            node.children
-            and node.children[0].data
-            and node.children[0].data.get("type") == "placeholder"
-        )
-
-        if has_placeholder:
-            if node_type == "catalog":
-                self._load_schemas(node, node.data["name"])
-            elif node_type == "schema":
-                self._load_tables(node, node.data["catalog"], node.data["name"])
-
-    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
-        """Handle tree node selection - insert table name into editor."""
-        node = event.node
-        if node.data is None:
-            return
-
-        if node.data.get("type") == "table":
-            catalog = node.data["catalog"]
-            schema = node.data["schema"]
-            table = node.data["name"]
-            full_name = f"{catalog}.{schema}.{table}"
-
-            editor = self.query_one(QueryEditor)
-            editor.insert(full_name)
-            editor.focus()
 
     @work(thread=True, exclusive=True, group="query")
     def _execute_query(self, sql: str) -> None:
@@ -1179,10 +977,6 @@ class TrinoQApp(App):
         results_table.clear(columns=True)
         self.query_one(StatusBar).status = "Results cleared"
 
-    def action_toggle_sidebar(self) -> None:
-        """Toggle the sidebar visibility."""
-        self.show_sidebar = not self.show_sidebar
-
     def action_toggle_python(self) -> None:
         """Toggle the Python editor visibility."""
         self.show_python_editor = not self.show_python_editor
@@ -1219,10 +1013,6 @@ class TrinoQApp(App):
 
         self.query_one(StatusBar).status = "Returned from editor"
 
-    def action_focus_tree(self) -> None:
-        """Focus the schema tree."""
-        self.query_one(SchemaTree).focus()
-
     def action_focus_editor(self) -> None:
         """Focus the query editor."""
         self.query_one(QueryEditor).focus()
@@ -1235,7 +1025,6 @@ class TrinoQApp(App):
         """Toggle maximize for the focused panel (editor or results)."""
         editor = self.query_one(QueryEditor)
         results = self.query_one("#results-container")
-        sidebar = self.query_one("#sidebar")
         main_area = self.query_one("#main-area")
 
         # Determine which panel is focused
@@ -1269,13 +1058,11 @@ class TrinoQApp(App):
         if self._maximized_panel is not None:
             editor.remove_class("hidden")
             results.remove_class("hidden")
-            sidebar.remove_class("hidden")
             main_area.remove_class("maximized")
             self._maximized_panel = None
             self.query_one(StatusBar).status = "Restored layout"
         else:
             # Maximize current panel
-            sidebar.add_class("hidden")
             main_area.add_class("maximized")
             if current_panel == "editor":
                 results.add_class("hidden")
@@ -1289,10 +1076,6 @@ class TrinoQApp(App):
                 self.query_one(
                     StatusBar
                 ).status = "Results maximized (ctrl+m to restore)"
-
-    def action_refresh_schema(self) -> None:
-        """Trigger schema refresh."""
-        self._load_catalogs()
 
     def action_show_search(self) -> None:
         """Show the table search popup."""

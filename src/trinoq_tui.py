@@ -70,6 +70,8 @@ def _pyte_color_to_rich(color: str) -> str:
     """Convert pyte color to Rich color format."""
     if color == "default":
         return ""
+    if color == "brown":
+        return "yellow"
     # If it looks like a hex color (6 chars, all hex), add #
     if len(color) == 6 and all(c in "0123456789abcdefABCDEF" for c in color):
         return f"#{color}"
@@ -95,6 +97,7 @@ class VimEditor(Widget, can_focus=True):
         width: 100%;
         height: 100%;
         background: #1e1e1e;
+        color: #f0f0f0;
     }
     """
 
@@ -270,6 +273,11 @@ class VimEditor(Widget, can_focus=True):
                             style_parts = []
                             fg = _pyte_color_to_rich(char_data.fg)
                             bg = _pyte_color_to_rich(char_data.bg)
+
+                            # Force visible text color if default
+                            if not fg:
+                                fg = "#f0f0f0"
+
                             if char_data.reverse:
                                 # For reverse, swap fg/bg
                                 fg, bg = bg or "black", fg or "white"

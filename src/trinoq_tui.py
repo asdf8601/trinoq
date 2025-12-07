@@ -1011,7 +1011,7 @@ class TrinoQApp(App):
             elif event.key in ("right", "down", "l", "j"):
                 self._move_area_selection(1)
                 event.stop()
-            elif event.key == "enter":
+            elif event.key in ("enter", "i"):
                 self._exit_area_select_mode()
                 event.stop()
 

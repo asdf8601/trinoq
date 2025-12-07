@@ -898,8 +898,7 @@ class TrinoQApp(App):
         background: $surface;
         border: round $surface-lighten-2;
         padding: 1 2;
-        align: center top;
-        margin: 3 0 0 0;
+        offset: 15% 30%;
     }
 
     #search-popup.visible {
@@ -908,6 +907,7 @@ class TrinoQApp(App):
 
     #search-input {
         width: 100%;
+        height: 1;
         border: none;
         background: $surface;
     }
@@ -930,8 +930,7 @@ class TrinoQApp(App):
         background: $surface;
         border: round $surface-lighten-2;
         padding: 1 2;
-        align: center top;
-        margin: 3 0 0 0;
+        offset: 15% 30%;
     }
 
     #queries-popup.visible {
@@ -947,6 +946,7 @@ class TrinoQApp(App):
 
     #queries-filter {
         width: 100%;
+        height: 1;
         border: none;
         background: $surface;
     }
@@ -968,8 +968,7 @@ class TrinoQApp(App):
         background: $surface;
         border: round $surface-lighten-2;
         padding: 1 2;
-        align: center top;
-        margin: 5 0 0 0;
+        offset: 25% 40%;
     }
 
     #save-query-popup.visible {

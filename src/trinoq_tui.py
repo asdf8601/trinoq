@@ -229,8 +229,8 @@ class VimEditor(Widget, can_focus=True):
         if self._vim_paused:
             return
 
-        # Ctrl+W to enter area selection mode
-        if event.key == "ctrl+w":
+        # Ctrl+C to enter area selection mode
+        if event.key == "ctrl+c":
             self.post_message(self.AreaSelectRequested())
             event.stop()
             return
@@ -989,8 +989,8 @@ class TrinoQApp(App):
 
     def on_key(self, event: events.Key) -> None:
         """Handle key events for area selection mode."""
-        # Ctrl+W to enter area selection mode (from non-vim areas like results)
-        if event.key == "ctrl+w" and not self._area_select_mode:
+        # Ctrl+C to enter area selection mode (from non-vim areas like results)
+        if event.key == "ctrl+c" and not self._area_select_mode:
             self._enter_area_select_mode()
             event.stop()
             return

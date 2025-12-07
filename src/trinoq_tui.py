@@ -155,7 +155,16 @@ class VimEditor(Widget, can_focus=True):
         self._initial_content = value
 
     def append_text(self, text: str) -> None:
-        """Append text to the content (will be visible on next vim restart)."""
+        """Append text to vim buffer directly."""
+        if self._vim_running and self._p_out is not None:
+            # Send vim commands: Esc, Go (go to end, new line, insert mode), text, Esc
+            try:
+                # Escape to ensure normal mode, then Go to append at end
+                commands = f"\x1bGo{text}\x1b"
+                self._p_out.write(commands.encode())
+            except Exception:
+                pass
+        # Also update internal content
         if self._content and not self._content.endswith("\n"):
             self._content += "\n"
         self._content += text

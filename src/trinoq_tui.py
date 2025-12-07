@@ -31,6 +31,7 @@ from textual.message import Message
 from textual.reactive import reactive, var
 from textual.widget import Widget
 from textual.widgets import (
+    Button,
     DataTable,
     Footer,
     Header,
@@ -582,21 +583,198 @@ def fuzzy_match(pattern: str, text: str) -> tuple[bool, int]:
 
 
 class ResultsTable(DataTable):
-    """A DataTable for displaying query results."""
+    """A DataTable for displaying query results with vim-style visual selection."""
 
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
-        Binding("h", "scroll_left", "Left", show=False),
-        Binding("l", "scroll_right", "Right", show=False),
+        Binding("h", "cursor_left", "Left", show=False),
+        Binding("l", "cursor_right", "Right", show=False),
+        Binding("v", "toggle_visual", "Visual", show=False),
+        Binding("y", "yank_selection", "Yank", show=False),
+        Binding("escape", "exit_visual", "Exit", show=False),
     ]
 
     def __init__(self) -> None:
         super().__init__(id="results-table", zebra_stripes=True)
-        self.cursor_type = "row"
+        self.cursor_type = "cell"
+        self._visual_mode = False
+        self._selection_start: tuple[int, int] | None = None  # (row, col)
+        self._selected_cells: set[tuple[int, int]] = set()
+        self._original_values: dict[tuple[int, int], str] = {}  # Store original values
+
+    def action_toggle_visual(self) -> None:
+        """Enter visual selection mode."""
+        if not self._visual_mode:
+            self._visual_mode = True
+            row_idx = self.cursor_row
+            col_idx = self.cursor_column
+            self._selection_start = (row_idx, col_idx)
+            self._update_selection()
+            self.app.query_one(
+                "StatusBar"
+            ).status = "-- VISUAL -- (hjkl to select, y to copy, Esc to cancel)"
+        else:
+            self._exit_visual_mode()
+
+    def action_exit_visual(self) -> None:
+        """Exit visual mode."""
+        if self._visual_mode:
+            self._exit_visual_mode()
+
+    def _exit_visual_mode(self) -> None:
+        """Clear visual mode state and restore original cell values."""
+        # Restore original values (remove highlighting)
+        for (row_idx, col_idx), original_value in self._original_values.items():
+            try:
+                row_key = self._row_locations.get_key(row_idx)
+                col_key = self._column_locations.get_key(col_idx)
+                if row_key and col_key:
+                    self.update_cell(row_key, col_key, original_value)
+            except Exception:
+                pass
+        self._visual_mode = False
+        self._selection_start = None
+        self._selected_cells.clear()
+        self._original_values.clear()
+        self.refresh()
+        self.app.query_one("StatusBar").status = ""
+
+    def _update_selection(self) -> None:
+        """Update selected cells based on cursor position."""
+        if not self._visual_mode or self._selection_start is None:
+            return
+
+        # First restore any previously highlighted cells that are no longer selected
+        old_selected = self._selected_cells.copy()
+
+        start_row, start_col = self._selection_start
+        end_row, end_col = self.cursor_row, self.cursor_column
+        # Get range bounds
+        min_row, max_row = min(start_row, end_row), max(start_row, end_row)
+        min_col, max_col = min(start_col, end_col), max(start_col, end_col)
+        # Build new selection set
+        new_selected = {
+            (r, c)
+            for r in range(min_row, max_row + 1)
+            for c in range(min_col, max_col + 1)
+        }
+
+        # Restore cells that are no longer selected
+        for coord in old_selected - new_selected:
+            if coord in self._original_values:
+                try:
+                    row_key = self._row_locations.get_key(coord[0])
+                    col_key = self._column_locations.get_key(coord[1])
+                    if row_key and col_key:
+                        self.update_cell(row_key, col_key, self._original_values[coord])
+                except Exception:
+                    pass
+
+        # Highlight new cells
+        for coord in new_selected - old_selected:
+            try:
+                row_key = self._row_locations.get_key(coord[0])
+                col_key = self._column_locations.get_key(coord[1])
+                if row_key and col_key:
+                    value = self.get_cell(row_key, col_key)
+                    # Store original value
+                    if coord not in self._original_values:
+                        self._original_values[coord] = str(value)
+                    # Apply highlight using Rich Text
+                    highlighted = Text(str(value), style="reverse")
+                    self.update_cell(row_key, col_key, highlighted)
+            except Exception:
+                pass
+
+        self._selected_cells = new_selected
+        self.refresh()
+
+    def on_data_table_cell_highlighted(self, event) -> None:
+        """Update selection when cursor moves."""
+        if self._visual_mode:
+            self._update_selection()
+
+    def action_yank_selection(self) -> None:
+        """Copy selected cells to clipboard."""
+        if not self._visual_mode or not self._selected_cells:
+            # If not in visual mode, copy current cell
+            row_idx = self.cursor_row
+            col_idx = self.cursor_column
+            try:
+                cell_value = self.get_cell_at((row_idx, col_idx))
+                self._copy_to_clipboard(str(cell_value))
+                self.app.query_one("StatusBar").status = "Copied cell"
+            except Exception:
+                pass
+            return
+
+        # Get selection bounds
+        rows = sorted(set(r for r, c in self._selected_cells))
+        cols = sorted(set(c for r, c in self._selected_cells))
+
+        # Build text from selected cells (TSV format)
+        lines = []
+        for row_idx in rows:
+            row_values = []
+            for col_idx in cols:
+                if (row_idx, col_idx) in self._selected_cells:
+                    try:
+                        cell_value = self.get_cell_at((row_idx, col_idx))
+                        row_values.append(str(cell_value))
+                    except Exception:
+                        row_values.append("")
+            lines.append("\t".join(row_values))
+
+        text = "\n".join(lines)
+        self._copy_to_clipboard(text)
+        cell_count = len(self._selected_cells)
+        self.app.query_one("StatusBar").status = f"Copied {cell_count} cells"
+        self._exit_visual_mode()
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        """Copy text to system clipboard."""
+        import subprocess
+        import sys
+
+        try:
+            if sys.platform == "darwin":
+                # macOS
+                subprocess.run(["pbcopy"], input=text.encode(), check=True)
+            elif sys.platform.startswith("linux"):
+                # Linux with xclip or xsel
+                try:
+                    subprocess.run(
+                        ["xclip", "-selection", "clipboard"],
+                        input=text.encode(),
+                        check=True,
+                    )
+                except FileNotFoundError:
+                    subprocess.run(
+                        ["xsel", "--clipboard", "--input"],
+                        input=text.encode(),
+                        check=True,
+                    )
+            else:
+                # Fallback to OSC 52
+                import base64
+
+                encoded = base64.b64encode(text.encode()).decode()
+                print(f"\033]52;c;{encoded}\a", end="", flush=True)
+        except Exception:
+            # Silent fail
+            pass
+
+    def get_cell_at(self, coordinate: tuple[int, int]) -> str:
+        """Get cell value at (row, col) coordinate."""
+        row_idx, col_idx = coordinate
+        row_key = self._row_locations.get_key(row_idx)
+        col_key = self._column_locations.get_key(col_idx)
+        return self.get_cell(row_key, col_key)
 
     def display_results(self, columns: list[str], rows: list[tuple]) -> None:
         """Display query results in the table."""
+        self._exit_visual_mode() if self._visual_mode else None
         self.clear(columns=True)
         if columns:
             # Convert column names to strings (needed for df.T which uses numeric indices)
@@ -607,6 +785,7 @@ class ResultsTable(DataTable):
 
     def display_error(self, error: str) -> None:
         """Display an error message in the table."""
+        self._exit_visual_mode() if self._visual_mode else None
         self.clear(columns=True)
         self.add_column("Error")
         self.add_row(str(error))
@@ -761,6 +940,38 @@ class SaveQueryPopup(Container):
         self.query_one("#save-query-name", Input).value = default_name
 
 
+class ExportPopup(Container):
+    """Floating popup for export file path."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__(id="export-popup")
+
+    def compose(self) -> ComposeResult:
+        yield Static("Export Results", id="export-title")
+        yield Input(placeholder="trinoq_export_YYYYMMDD_HHMMSS.csv", id="export-path")
+        with Horizontal(id="export-buttons"):
+            yield Button("Save", id="btn-export-save", variant="primary")
+            yield Button("Cancel", id="btn-export-cancel", variant="default")
+
+    def action_cancel(self) -> None:
+        self.app.action_hide_export()
+
+    def set_default_path(self) -> None:
+        """Set default export path using cwd and timestamp."""
+        from datetime import datetime
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_path = str(Path.cwd() / f"trinoq_export_{timestamp}.csv")
+        input_widget = self.query_one("#export-path", Input)
+        input_widget.clear()
+        input_widget.insert_text_at_cursor(default_path)
+        input_widget.focus()
+
+
 class StatusBar(Static):
     """A status bar widget to display query status with spinner."""
 
@@ -861,8 +1072,22 @@ class TrinoQApp(App):
         border: round $secondary;
     }
 
+    #results-toolbar {
+        height: 1;
+        width: 100%;
+        align: left middle;
+    }
+
+    #results-toolbar Button {
+        min-width: 8;
+        height: 1;
+        margin-right: 1;
+        border: none;
+        padding: 0 1;
+    }
+
     #results-table {
-        height: 100%;
+        height: 1fr;
     }
 
     #status-bar {
@@ -995,6 +1220,47 @@ class TrinoQApp(App):
         background: $surface;
     }
 
+    #export-popup {
+        display: none;
+        layer: popup;
+        width: 80%;
+        height: auto;
+        background: $surface;
+        border: round $surface-lighten-2;
+        padding: 1 2;
+        offset: 10% 40%;
+    }
+
+    #export-popup.visible {
+        display: block;
+    }
+
+    #export-title {
+        width: 100%;
+        text-align: center;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    #export-path {
+        width: 100%;
+        height: 3;
+        border: solid $primary;
+        background: $surface;
+    }
+
+    #export-buttons {
+        width: 100%;
+        height: 3;
+        margin-top: 1;
+        align: center middle;
+    }
+
+    #export-buttons Button {
+        min-width: 10;
+        margin: 0 1;
+    }
+
     #sql-editor.hidden {
         display: none;
     }
@@ -1059,11 +1325,15 @@ class TrinoQApp(App):
                     )
                 yield Splitter(id="horizontal-splitter", orientation="horizontal")
                 with Container(id="results-container"):
+                    with Horizontal(id="results-toolbar"):
+                        yield Button("Copy", id="btn-copy", variant="default")
+                        yield Button("Export", id="btn-export", variant="default")
                     yield ResultsTable()
         yield StatusBar(id="status-bar")
         yield SearchPopup()
         yield QueriesPopup()
         yield SaveQueryPopup()
+        yield ExportPopup()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1403,6 +1673,90 @@ class TrinoQApp(App):
         results_table.clear(columns=True)
         self.query_one(StatusBar).status = "Results cleared"
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        if event.button.id == "btn-copy":
+            self._copy_results_to_clipboard()
+        elif event.button.id == "btn-export":
+            self._export_results()
+        elif event.button.id == "btn-export-save":
+            path = self.query_one("#export-path", Input).value.strip()
+            if path:
+                self._do_export(path)
+                self.action_hide_export()
+            else:
+                self.notify("Please enter a file path", severity="warning")
+        elif event.button.id == "btn-export-cancel":
+            self.action_hide_export()
+
+    def _copy_results_to_clipboard(self) -> None:
+        """Copy all results to clipboard as TSV."""
+        results_table = self.query_one(ResultsTable)
+        if results_table.row_count == 0:
+            self.query_one(StatusBar).status = "No results to copy"
+            return
+
+        # Get column headers
+        columns = [str(col.label) for col in results_table.columns.values()]
+        lines = ["\t".join(columns)]
+
+        # Get all rows
+        for row_idx in range(results_table.row_count):
+            row_values = []
+            for col_idx in range(len(columns)):
+                try:
+                    row_key = results_table._row_locations.get_key(row_idx)
+                    col_key = results_table._column_locations.get_key(col_idx)
+                    if row_key and col_key:
+                        value = results_table.get_cell(row_key, col_key)
+                        row_values.append(str(value))
+                except Exception:
+                    row_values.append("")
+            lines.append("\t".join(row_values))
+
+        text = "\n".join(lines)
+        results_table._copy_to_clipboard(text)
+        self.query_one(StatusBar).status = f"Copied {results_table.row_count} rows"
+
+    def _export_results(self) -> None:
+        """Show export popup to get file path from user."""
+        self.action_show_export()
+
+    def _do_export(self, export_path: str) -> None:
+        """Export results to CSV file at the given path."""
+        import csv
+
+        results_table = self.query_one(ResultsTable)
+        if results_table.row_count == 0:
+            self.query_one(StatusBar).status = "No results to export"
+            return
+
+        path = Path(export_path)
+
+        # Get column headers
+        columns = [str(col.label) for col in results_table.columns.values()]
+
+        # Write CSV
+        try:
+            with open(path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(columns)
+                for row_idx in range(results_table.row_count):
+                    row_values = []
+                    for col_idx in range(len(columns)):
+                        try:
+                            row_key = results_table._row_locations.get_key(row_idx)
+                            col_key = results_table._column_locations.get_key(col_idx)
+                            if row_key and col_key:
+                                value = results_table.get_cell(row_key, col_key)
+                                row_values.append(str(value))
+                        except Exception:
+                            row_values.append("")
+                    writer.writerow(row_values)
+            self.query_one(StatusBar).status = f"Exported to {path}"
+        except Exception as e:
+            self.query_one(StatusBar).status = f"Export failed: {e}"
+
     def on_vim_editor_closed(self, event: VimEditor.Closed) -> None:
         """Handle vim editor closing - restart vim for the editor."""
         # Restart vim for whichever editor was closed
@@ -1549,6 +1903,22 @@ class TrinoQApp(App):
         popup.remove_class("visible")
         self.query_one("#sql-editor", VimEditor).focus()
 
+    def action_show_export(self) -> None:
+        """Show the export popup."""
+        results_table = self.query_one(ResultsTable)
+        if results_table.row_count == 0:
+            self.query_one(StatusBar).status = "No results to export"
+            return
+        popup = self.query_one(ExportPopup)
+        popup.add_class("visible")
+        self.call_after_refresh(popup.set_default_path)
+
+    def action_hide_export(self) -> None:
+        """Hide the export popup."""
+        popup = self.query_one(ExportPopup)
+        popup.remove_class("visible")
+        self.query_one(ResultsTable).focus()
+
     def _do_save_query(self, name: str, sql: str) -> None:
         """Actually save the query with the given name."""
         queries = load_saved_queries()
@@ -1641,6 +2011,14 @@ class TrinoQApp(App):
                 self.action_hide_save_query()
             elif not name:
                 self.notify("Please enter a name", severity="warning")
+
+        elif event.input.id == "export-path":
+            path = event.value.strip()
+            if path:
+                self._do_export(path)
+                self.action_hide_export()
+            else:
+                self.notify("Please enter a file path", severity="warning")
 
         elif event.input.id == "search-input":
             # Select from search results

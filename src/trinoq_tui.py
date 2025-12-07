@@ -107,6 +107,11 @@ class VimEditor(Widget, can_focus=True):
             self.editor_id = editor_id
             super().__init__()
 
+    class AreaSelectRequested(Message):
+        """Message sent when double-escape is detected."""
+
+        pass
+
     def __init__(
         self,
         *,
@@ -128,10 +133,12 @@ class VimEditor(Widget, can_focus=True):
         self._data_or_disconnect = None
         self._event = asyncio.Event()
         self._background_tasks: set = set()
+        self._last_escape_time: float = 0  # For detecting double-escape
         self._initial_content: str = initial_content
         self._auto_start = auto_start
         self._content: str = initial_content  # Store current content for access
         self._started = False  # Track if vim has been started
+        self._vim_paused = False  # Pause vim input for area selection mode
 
     @property
     def content(self) -> str:
@@ -200,6 +207,21 @@ class VimEditor(Widget, can_focus=True):
         """Handle key events and forward to vim."""
         if not self._vim_running or self._p_out is None:
             return
+
+        # Don't capture keys when paused (area selection mode)
+        if self._vim_paused:
+            return
+
+        # Detect double-escape for area selection mode
+        if event.key == "escape":
+            current_time = time.time()
+            if current_time - self._last_escape_time < 0.4:
+                # Double escape detected - request area selection mode
+                self._last_escape_time = 0
+                self.post_message(self.AreaSelectRequested())
+                event.stop()
+                return
+            self._last_escape_time = current_time
 
         event.stop()
 
@@ -902,6 +924,10 @@ class TrinoQApp(App):
         grid-size: 1 1;
         grid-rows: 1fr;
     }
+
+    .area-selected {
+        border: heavy yellow !important;
+    }
     """
 
     BINDINGS = [
@@ -914,6 +940,11 @@ class TrinoQApp(App):
     show_python_editor = var(True)
     _maximized_panel: str | None = None  # Track which panel is maximized
     _connection: Any = None
+    _area_select_mode: bool = False  # Area selection mode
+    _selected_area: int = 0  # 0=sql, 1=python, 2=results
+    _last_escape_time: float = 0  # For detecting double-escape
+    _areas: list[str] = ["sql-editor", "python-editor", "results-container"]
+    _areas_focus: list[str] = ["sql-editor", "python-editor", "results-table"]
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -943,6 +974,110 @@ class TrinoQApp(App):
     def on_mount(self) -> None:
         """Called when the app is mounted."""
         self.query_one("#sql-editor", VimEditor).focus()
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle key events for area selection mode."""
+        # Detect double-escape to enter area selection mode
+        if event.key == "escape":
+            current_time = time.time()
+            if self._area_select_mode:
+                # Exit area selection mode
+                self._exit_area_select_mode()
+                event.stop()
+                return
+            elif current_time - self._last_escape_time < 0.4:
+                # Double escape detected - enter area selection mode
+                self._enter_area_select_mode()
+                event.stop()
+                return
+            self._last_escape_time = current_time
+            return
+
+        # Handle navigation in area selection mode
+        if self._area_select_mode:
+            if event.key in ("left", "up"):
+                self._move_area_selection(-1)
+                event.stop()
+            elif event.key in ("right", "down"):
+                self._move_area_selection(1)
+                event.stop()
+            elif event.key == "enter":
+                self._exit_area_select_mode()
+                event.stop()
+
+    def _enter_area_select_mode(self) -> None:
+        """Enter area selection mode."""
+        self._area_select_mode = True
+        # Determine current area based on focus
+        focused = self.focused
+        if focused:
+            if focused.id == "sql-editor":
+                self._selected_area = 0
+            elif focused.id == "python-editor":
+                self._selected_area = 1
+            elif focused.id == "results-table":
+                self._selected_area = 2
+        # Pause vim editors so they don't capture keys
+        self._set_vim_editors_paused(True)
+        self._update_area_highlight()
+        self.query_one(
+            StatusBar
+        ).status = "Area select: ←↑↓→ to move, Enter/Esc to select"
+
+    def on_vim_editor_area_select_requested(
+        self, event: VimEditor.AreaSelectRequested
+    ) -> None:
+        """Handle area selection request from VimEditor."""
+        self._enter_area_select_mode()
+
+    def _set_vim_editors_paused(self, paused: bool) -> None:
+        """Pause or resume all vim editors."""
+        try:
+            self.query_one("#sql-editor", VimEditor)._vim_paused = paused
+        except Exception:
+            pass
+        try:
+            self.query_one("#python-editor", VimEditor)._vim_paused = paused
+        except Exception:
+            pass
+
+    def _exit_area_select_mode(self) -> None:
+        """Exit area selection mode and focus selected area."""
+        self._area_select_mode = False
+        # Resume vim editors
+        self._set_vim_editors_paused(False)
+        # Remove all highlights
+        for area_id in self._areas:
+            try:
+                widget = self.query_one(f"#{area_id}")
+                widget.remove_class("area-selected")
+            except Exception:
+                pass
+        # Focus the selected area (use _areas_focus for focusable widgets)
+        area_id = self._areas_focus[self._selected_area]
+        try:
+            widget = self.query_one(f"#{area_id}")
+            widget.focus()
+        except Exception:
+            pass
+        self.query_one(StatusBar).status = "Ready"
+
+    def _move_area_selection(self, direction: int) -> None:
+        """Move area selection by direction (-1 or +1)."""
+        self._selected_area = (self._selected_area + direction) % len(self._areas)
+        self._update_area_highlight()
+
+    def _update_area_highlight(self) -> None:
+        """Update visual highlight for selected area."""
+        for i, area_id in enumerate(self._areas):
+            try:
+                widget = self.query_one(f"#{area_id}")
+                if i == self._selected_area:
+                    widget.add_class("area-selected")
+                else:
+                    widget.remove_class("area-selected")
+            except Exception:
+                pass
 
     def watch_show_python_editor(self, show_python_editor: bool) -> None:
         """Toggle the Python editor visibility."""

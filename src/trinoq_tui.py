@@ -992,6 +992,10 @@ class TrinoQApp(App):
         display: none;
     }
 
+    #python-editor.hidden {
+        display: none;
+    }
+
     #editors-row.hidden {
         display: none;
     }
@@ -1411,30 +1415,36 @@ class TrinoQApp(App):
         self.query_one(ResultsTable).focus()
 
     def action_toggle_maximize(self) -> None:
-        """Toggle maximize for the focused panel (editor or results)."""
+        """Toggle maximize for the focused panel (sql, python, or results)."""
+        sql_editor = self.query_one("#sql-editor")
+        python_editor = self.query_one("#python-editor")
         editors_row = self.query_one("#editors-row")
         results = self.query_one("#results-container")
-        main_area = self.query_one("#main-area")
+        h_splitter = self.query_one("#horizontal-splitter")
+        v_splitter = self.query_one("#vertical-splitter")
 
         # Determine which panel is focused
         focused = self.focused
         if focused is None:
             return
 
-        # Find if we're in editor or results
+        # Find which specific panel we're in
         current_panel = None
-        if focused.id in ("sql-editor", "python-editor") or focused.has_class(
-            "text-area"
-        ):
-            current_panel = "editor"
-        elif focused.id == "results-table" or focused.id == "results-container":
+        if focused.id == "sql-editor":
+            current_panel = "sql"
+        elif focused.id == "python-editor":
+            current_panel = "python"
+        elif focused.id in ("results-table", "results-container"):
             current_panel = "results"
         else:
             # Check ancestors
             node = focused
             while node is not None:
-                if node.id in ("sql-editor", "python-editor", "editors-row"):
-                    current_panel = "editor"
+                if node.id == "sql-editor":
+                    current_panel = "sql"
+                    break
+                elif node.id == "python-editor":
+                    current_panel = "python"
                     break
                 elif node.id == "results-container":
                     current_panel = "results"
@@ -1442,32 +1452,43 @@ class TrinoQApp(App):
                 node = node.parent
 
         if current_panel is None:
-            self.notify("Focus editor or results to maximize")
+            self.notify("Focus a panel to maximize")
             return
-
-        h_splitter = self.query_one("#horizontal-splitter")
 
         # If already maximized, restore
         if self._maximized_panel is not None:
+            # Restore all panels
+            sql_editor.remove_class("hidden")
+            python_editor.remove_class("hidden")
             editors_row.remove_class("hidden")
             results.remove_class("hidden")
             h_splitter.remove_class("hidden")
-            main_area.remove_class("maximized")
+            v_splitter.remove_class("hidden")
             self._maximized_panel = None
             self._apply_layout()  # Restore splitter ratios
             self.query_one(StatusBar).status = "Restored layout"
         else:
             # Maximize current panel
-            main_area.add_class("maximized")
             h_splitter.add_class("hidden")
-            if current_panel == "editor":
+            v_splitter.add_class("hidden")
+
+            if current_panel == "sql":
+                python_editor.add_class("hidden")
                 results.add_class("hidden")
                 editors_row.styles.height = "100%"
-                self._maximized_panel = "editor"
+                sql_editor.styles.width = "100%"
+                self._maximized_panel = "sql"
+                self.query_one(StatusBar).status = "SQL maximized (ctrl+m to restore)"
+            elif current_panel == "python":
+                sql_editor.add_class("hidden")
+                results.add_class("hidden")
+                editors_row.styles.height = "100%"
+                python_editor.styles.width = "100%"
+                self._maximized_panel = "python"
                 self.query_one(
                     StatusBar
-                ).status = "Editor maximized (ctrl+m to restore)"
-            else:
+                ).status = "Python maximized (ctrl+m to restore)"
+            else:  # results
                 editors_row.add_class("hidden")
                 results.styles.height = "100%"
                 self._maximized_panel = "results"

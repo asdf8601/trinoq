@@ -584,6 +584,13 @@ def fuzzy_match(pattern: str, text: str) -> tuple[bool, int]:
 class ResultsTable(DataTable):
     """A DataTable for displaying query results."""
 
+    BINDINGS = [
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        Binding("h", "scroll_left", "Left", show=False),
+        Binding("l", "scroll_right", "Right", show=False),
+    ]
+
     def __init__(self) -> None:
         super().__init__(id="results-table", zebra_stripes=True)
         self.cursor_type = "row"

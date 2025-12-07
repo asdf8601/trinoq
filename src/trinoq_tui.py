@@ -1017,6 +1017,7 @@ class TrinoQApp(App):
     BINDINGS = [
         Binding("f5", "execute_query", "Run", show=True, priority=True),
         Binding("ctrl+p", "command_palette", "Menu", show=True, priority=True),
+        Binding("f11", "toggle_maximize", "Maximize", show=False, priority=True),
     ]
 
     COMMANDS = {TrinoQCommands}
@@ -1478,23 +1479,19 @@ class TrinoQApp(App):
                 editors_row.styles.height = "100%"
                 sql_editor.styles.width = "100%"
                 self._maximized_panel = "sql"
-                self.query_one(StatusBar).status = "SQL maximized (ctrl+m to restore)"
+                self.query_one(StatusBar).status = "SQL maximized (F11 to restore)"
             elif current_panel == "python":
                 sql_editor.add_class("hidden")
                 results.add_class("hidden")
                 editors_row.styles.height = "100%"
                 python_editor.styles.width = "100%"
                 self._maximized_panel = "python"
-                self.query_one(
-                    StatusBar
-                ).status = "Python maximized (ctrl+m to restore)"
+                self.query_one(StatusBar).status = "Python maximized (F11 to restore)"
             else:  # results
                 editors_row.add_class("hidden")
                 results.styles.height = "100%"
                 self._maximized_panel = "results"
-                self.query_one(
-                    StatusBar
-                ).status = "Results maximized (ctrl+m to restore)"
+                self.query_one(StatusBar).status = "Results maximized (F11 to restore)"
 
     def action_show_search(self) -> None:
         """Show the table search popup."""

@@ -1004,10 +1004,10 @@ class TrinoQApp(App):
 
         # Handle navigation in area selection mode
         if self._area_select_mode:
-            if event.key in ("left", "up"):
+            if event.key in ("left", "up", "h", "k"):
                 self._move_area_selection(-1)
                 event.stop()
-            elif event.key in ("right", "down"):
+            elif event.key in ("right", "down", "l", "j"):
                 self._move_area_selection(1)
                 event.stop()
             elif event.key == "enter":

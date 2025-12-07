@@ -87,6 +87,95 @@ class PyteDisplay:
             yield line
 
 
+class Splitter(Widget):
+    """Draggable splitter between panels for resizing."""
+
+    DEFAULT_CSS = """
+    Splitter {
+        background: $surface-lighten-1;
+    }
+    
+    Splitter:hover {
+        background: $accent;
+    }
+    
+    Splitter.dragging {
+        background: $accent;
+    }
+    
+    Splitter.hidden {
+        display: none;
+    }
+    
+    Splitter.horizontal {
+        height: 1;
+        width: 100%;
+        min-height: 1;
+    }
+    
+    Splitter.vertical {
+        width: 1;
+        height: 100%;
+        min-width: 1;
+    }
+    """
+
+    class Dragged(Message):
+        """Message sent when splitter is dragged."""
+
+        def __init__(self, splitter: "Splitter", delta: int) -> None:
+            self.splitter = splitter
+            self.delta = delta
+            super().__init__()
+
+    def __init__(
+        self,
+        orientation: str = "horizontal",
+        name: str | None = None,
+        id: str | None = None,
+        classes: str | None = None,
+    ) -> None:
+        super().__init__(name=name, id=id, classes=classes)
+        self.orientation = orientation
+        self._dragging = False
+        self._last_pos = 0
+        self.add_class(orientation)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """Start dragging."""
+        self._dragging = True
+        self._last_pos = (
+            event.screen_y if self.orientation == "horizontal" else event.screen_x
+        )
+        self.add_class("dragging")
+        self.capture_mouse()
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Handle mouse movement during drag."""
+        if self._dragging:
+            current = (
+                event.screen_y if self.orientation == "horizontal" else event.screen_x
+            )
+            delta = current - self._last_pos
+            if delta != 0:
+                self.post_message(self.Dragged(self, delta))
+                self._last_pos = current
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        """Stop dragging."""
+        if self._dragging:
+            self._dragging = False
+            self.remove_class("dragging")
+            self.release_mouse()
+        event.stop()
+
+    def render(self) -> str:
+        """Render empty content - splitter is just a colored bar."""
+        return ""
+
+
 class VimEditor(Widget, can_focus=True):
     """Embedded vim/nvim editor using pyte terminal emulation."""
 
@@ -697,11 +786,6 @@ class TrinoQCommands(Provider):
     def _commands(self) -> list[tuple[str, Any, str]]:
         return [
             ("Run Query", self.app.action_execute_query, "Execute current SQL query"),
-            (
-                "Toggle Python Editor",
-                self.app.action_toggle_python,
-                "Show/hide Python script editor",
-            ),
             ("Save Query", self.app.action_save_query, "Save current query"),
             ("Open Queries", self.app.action_show_queries, "Open saved queries"),
             ("Clear Results", self.app.action_clear_results, "Clear results table"),
@@ -756,19 +840,17 @@ class TrinoQApp(App):
     #main-area {
         width: 1fr;
         height: 100%;
-        layout: grid;
-        grid-size: 1 2;
-        grid-rows: 2fr 3fr;
+        layout: vertical;
     }
 
     #sql-editor {
         height: 100%;
-        width: 100%;
+        width: 60%;
         border: round $primary;
     }
 
     #results-container {
-        height: 100%;
+        height: 50%;
         border: round $secondary;
     }
 
@@ -793,18 +875,9 @@ class TrinoQApp(App):
     }
 
     #python-editor {
-        display: none;
         height: 100%;
-        width: 1fr;
+        width: 40%;
         border: round $success;
-    }
-
-    #python-editor.visible {
-        display: block;
-    }
-
-    #python-editor.hidden {
-        display: none;
     }
 
     #python-editor:focus-within {
@@ -812,13 +885,8 @@ class TrinoQApp(App):
     }
 
     #editors-row {
-        height: 100%;
+        height: 50%;
         width: 100%;
-    }
-
-    #editor-container {
-        height: 100%;
-        width: 1fr;
     }
 
     #search-popup {
@@ -925,7 +993,7 @@ class TrinoQApp(App):
         display: none;
     }
 
-    #editor-container.hidden {
+    #editors-row.hidden {
         display: none;
     }
 
@@ -950,7 +1018,6 @@ class TrinoQApp(App):
 
     COMMANDS = {TrinoQCommands}
 
-    show_python_editor = var(True)
     _maximized_panel: str | None = None  # Track which panel is maximized
     _connection: Any = None
     _area_select_mode: bool = False  # Area selection mode
@@ -958,23 +1025,28 @@ class TrinoQApp(App):
     _areas: list[str] = ["sql-editor", "python-editor", "results-container"]
     _areas_focus: list[str] = ["sql-editor", "python-editor", "results-table"]
 
+    # Layout ratios for splitter resize
+    _editors_ratio: float = 0.5  # 50% editors, 50% results
+    _sql_ratio: float = 0.6  # 60% SQL, 40% Python
+    _layout_config_path: Path = Path.home() / ".config" / "trinoq" / "layout.json"
+
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="content-area"):
             with Vertical(id="main-area"):
                 with Horizontal(id="editors-row"):
-                    with Container(id="editor-container"):
-                        yield VimEditor(
-                            id="sql-editor",
-                            auto_start=True,
-                            initial_content="-- SQL query\nselect 1",
-                        )
+                    yield VimEditor(
+                        id="sql-editor",
+                        auto_start=True,
+                        initial_content="-- SQL query\nselect 1",
+                    )
+                    yield Splitter(id="vertical-splitter", orientation="vertical")
                     yield VimEditor(
                         id="python-editor",
                         auto_start=True,
-                        classes="visible",
                         initial_content="# python script\n# df = df * 100",
                     )
+                yield Splitter(id="horizontal-splitter", orientation="horizontal")
                 with Container(id="results-container"):
                     yield ResultsTable()
         yield StatusBar(id="status-bar")
@@ -985,7 +1057,85 @@ class TrinoQApp(App):
 
     def on_mount(self) -> None:
         """Called when the app is mounted."""
+        self._load_layout()
+        self._apply_layout()
         self.query_one("#sql-editor", VimEditor).focus()
+
+    def _load_layout(self) -> None:
+        """Load layout ratios from config file."""
+        try:
+            if self._layout_config_path.exists():
+                data = json.loads(self._layout_config_path.read_text())
+                self._editors_ratio = data.get("editors_ratio", 0.5)
+                self._sql_ratio = data.get("sql_ratio", 0.6)
+        except Exception:
+            pass
+
+    def _save_layout(self) -> None:
+        """Save layout ratios to config file."""
+        try:
+            self._layout_config_path.parent.mkdir(parents=True, exist_ok=True)
+            self._layout_config_path.write_text(
+                json.dumps(
+                    {
+                        "editors_ratio": self._editors_ratio,
+                        "sql_ratio": self._sql_ratio,
+                    }
+                )
+            )
+        except Exception:
+            pass
+
+    def _apply_layout(self) -> None:
+        """Apply current ratios to layout."""
+        # Clamp values between 10% and 90%
+        self._editors_ratio = max(0.1, min(0.9, self._editors_ratio))
+        self._sql_ratio = max(0.1, min(0.9, self._sql_ratio))
+
+        try:
+            # Apply editors vs results ratio
+            editors_row = self.query_one("#editors-row")
+            results = self.query_one("#results-container")
+            editors_row.styles.height = f"{int(self._editors_ratio * 100)}%"
+            results.styles.height = f"{int((1 - self._editors_ratio) * 100)}%"
+
+            # Apply SQL vs Python ratio
+            sql_editor = self.query_one("#sql-editor")
+            python_editor = self.query_one("#python-editor")
+            sql_editor.styles.width = f"{int(self._sql_ratio * 100)}%"
+            python_editor.styles.width = f"{int((1 - self._sql_ratio) * 100)}%"
+        except Exception:
+            pass
+
+    def on_splitter_dragged(self, event: Splitter.Dragged) -> None:
+        """Handle splitter drag events."""
+        splitter_id = event.splitter.id
+
+        if splitter_id == "horizontal-splitter":
+            # Vertical resize: editors vs results
+            try:
+                main_area = self.query_one("#main-area")
+                total_height = main_area.size.height
+                if total_height > 0:
+                    delta_ratio = event.delta / total_height
+                    self._editors_ratio += delta_ratio
+                    self._apply_layout()
+                    self._save_layout()
+            except Exception:
+                pass
+
+        elif splitter_id == "vertical-splitter":
+            # Horizontal resize: SQL vs Python
+            try:
+                editors_row = self.query_one("#editors-row")
+                total_width = editors_row.size.width
+                if total_width > 0:
+                    delta_ratio = event.delta / total_width
+                    self._sql_ratio += delta_ratio
+                    self._apply_layout()
+                    self._save_layout()
+            except Exception:
+                pass
 
     def on_key(self, event: events.Key) -> None:
         """Handle key events for area selection mode."""
@@ -1086,18 +1236,6 @@ class TrinoQApp(App):
                     widget.remove_class("area-selected")
             except Exception:
                 pass
-
-    def watch_show_python_editor(self, show_python_editor: bool) -> None:
-        """Toggle the Python editor visibility."""
-        python_editor = self.query_one("#python-editor", VimEditor)
-        if show_python_editor:
-            python_editor.add_class("visible")
-            # Start vim if not already started
-            if not python_editor._started:
-                python_editor._started = True
-                python_editor._start_vim()
-        else:
-            python_editor.remove_class("visible")
 
     def _get_connection(self) -> Any:
         """Get or create a Trino connection."""
@@ -1217,14 +1355,18 @@ class TrinoQApp(App):
             self.notify("No query to execute", severity="warning")
             return
 
-        # Check if Python editor is visible and has content
-        if self.show_python_editor:
-            python_editor = self.query_one("#python-editor", VimEditor)
-            python_script = python_editor.content.strip()
-            # Always run with Python if the editor is visible
-            if python_script:
-                self._execute_query_with_python(sql.strip(), python_script)
-                return
+        # Check if Python editor has content (always visible now)
+        python_editor = self.query_one("#python-editor", VimEditor)
+        python_script = python_editor.content.strip()
+        # Check if there's actual Python code (not just comments)
+        python_lines = [
+            line
+            for line in python_script.split("\n")
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if python_lines:
+            self._execute_query_with_python(sql.strip(), python_script)
+            return
 
         self._execute_query(sql.strip())
 
@@ -1233,12 +1375,6 @@ class TrinoQApp(App):
         results_table = self.query_one(ResultsTable)
         results_table.clear(columns=True)
         self.query_one(StatusBar).status = "Results cleared"
-
-    def action_toggle_python(self) -> None:
-        """Toggle the Python editor visibility."""
-        self.show_python_editor = not self.show_python_editor
-        if self.show_python_editor:
-            self.query_one("#python-editor", VimEditor).focus()
 
     def on_vim_editor_closed(self, event: VimEditor.Closed) -> None:
         """Handle vim editor closing - restart vim for the editor."""
@@ -1261,7 +1397,7 @@ class TrinoQApp(App):
 
     def action_toggle_maximize(self) -> None:
         """Toggle maximize for the focused panel (editor or results)."""
-        editor = self.query_one("#editor-container")
+        editors_row = self.query_one("#editors-row")
         results = self.query_one("#results-container")
         main_area = self.query_one("#main-area")
 
@@ -1272,7 +1408,9 @@ class TrinoQApp(App):
 
         # Find if we're in editor or results
         current_panel = None
-        if focused.id == "sql-editor" or focused.has_class("text-area"):
+        if focused.id in ("sql-editor", "python-editor") or focused.has_class(
+            "text-area"
+        ):
             current_panel = "editor"
         elif focused.id == "results-table" or focused.id == "results-container":
             current_panel = "results"
@@ -1280,7 +1418,7 @@ class TrinoQApp(App):
             # Check ancestors
             node = focused
             while node is not None:
-                if node.id == "sql-editor" or node.id == "editor-container":
+                if node.id in ("sql-editor", "python-editor", "editors-row"):
                     current_panel = "editor"
                     break
                 elif node.id == "results-container":
@@ -1292,24 +1430,31 @@ class TrinoQApp(App):
             self.notify("Focus editor or results to maximize")
             return
 
+        h_splitter = self.query_one("#horizontal-splitter")
+
         # If already maximized, restore
         if self._maximized_panel is not None:
-            editor.remove_class("hidden")
+            editors_row.remove_class("hidden")
             results.remove_class("hidden")
+            h_splitter.remove_class("hidden")
             main_area.remove_class("maximized")
             self._maximized_panel = None
+            self._apply_layout()  # Restore splitter ratios
             self.query_one(StatusBar).status = "Restored layout"
         else:
             # Maximize current panel
             main_area.add_class("maximized")
+            h_splitter.add_class("hidden")
             if current_panel == "editor":
                 results.add_class("hidden")
+                editors_row.styles.height = "100%"
                 self._maximized_panel = "editor"
                 self.query_one(
                     StatusBar
                 ).status = "Editor maximized (ctrl+m to restore)"
             else:
-                editor.add_class("hidden")
+                editors_row.add_class("hidden")
+                results.styles.height = "100%"
                 self._maximized_panel = "results"
                 self.query_one(
                     StatusBar

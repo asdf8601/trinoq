@@ -133,7 +133,6 @@ class VimEditor(Widget, can_focus=True):
         self._data_or_disconnect = None
         self._event = asyncio.Event()
         self._background_tasks: set = set()
-        self._last_escape_time: float = 0  # For detecting double-escape
         self._initial_content: str = initial_content
         self._auto_start = auto_start
         self._content: str = initial_content  # Store current content for access
@@ -150,9 +149,18 @@ class VimEditor(Widget, can_focus=True):
 
     @content.setter
     def content(self, value: str) -> None:
-        """Set editor content (will be used on next vim start)."""
+        """Set editor content - updates vim buffer if running."""
         self._content = value
         self._initial_content = value
+        if self._vim_running and self._p_out is not None and self._temp_file:
+            try:
+                # Write new content to temp file
+                self._temp_file.write_text(value)
+                # Send vim command to reload file: Esc, :e! (reload), Enter
+                commands = "\x1b:e!\r"
+                self._p_out.write(commands.encode())
+            except Exception:
+                pass
 
     def append_text(self, text: str) -> None:
         """Append text to vim buffer directly."""
@@ -221,16 +229,11 @@ class VimEditor(Widget, can_focus=True):
         if self._vim_paused:
             return
 
-        # Detect double-escape for area selection mode
-        if event.key == "escape":
-            current_time = time.time()
-            if current_time - self._last_escape_time < 0.4:
-                # Double escape detected - request area selection mode
-                self._last_escape_time = 0
-                self.post_message(self.AreaSelectRequested())
-                event.stop()
-                return
-            self._last_escape_time = current_time
+        # Ctrl+W to enter area selection mode
+        if event.key == "ctrl+w":
+            self.post_message(self.AreaSelectRequested())
+            event.stop()
+            return
 
         event.stop()
 
@@ -952,7 +955,6 @@ class TrinoQApp(App):
     _connection: Any = None
     _area_select_mode: bool = False  # Area selection mode
     _selected_area: int = 0  # 0=sql, 1=python, 2=results
-    _last_escape_time: float = 0  # For detecting double-escape
     _areas: list[str] = ["sql-editor", "python-editor", "results-container"]
     _areas_focus: list[str] = ["sql-editor", "python-editor", "results-table"]
 
@@ -987,20 +989,16 @@ class TrinoQApp(App):
 
     def on_key(self, event: events.Key) -> None:
         """Handle key events for area selection mode."""
-        # Detect double-escape to enter area selection mode
-        if event.key == "escape":
-            current_time = time.time()
-            if self._area_select_mode:
-                # Exit area selection mode
-                self._exit_area_select_mode()
-                event.stop()
-                return
-            elif current_time - self._last_escape_time < 0.4:
-                # Double escape detected - enter area selection mode
-                self._enter_area_select_mode()
-                event.stop()
-                return
-            self._last_escape_time = current_time
+        # Ctrl+W to enter area selection mode (from non-vim areas like results)
+        if event.key == "ctrl+w" and not self._area_select_mode:
+            self._enter_area_select_mode()
+            event.stop()
+            return
+
+        # Escape to exit area selection mode
+        if event.key == "escape" and self._area_select_mode:
+            self._exit_area_select_mode()
+            event.stop()
             return
 
         # Handle navigation in area selection mode

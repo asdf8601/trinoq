@@ -1151,13 +1151,34 @@ class TrinoQApp(App):
             event.stop()
             return
 
-        # Handle navigation in area selection mode
+        # Handle navigation in area selection mode (positional)
         if self._area_select_mode:
-            if event.key in ("left", "up", "h", "k"):
-                self._move_area_selection(-1)
+            # Layout:
+            # [0: SQL] [1: Python]
+            # [2: Results        ]
+            if event.key in ("left", "h"):
+                # Move left: Python -> SQL, others stay
+                if self._selected_area == 1:
+                    self._selected_area = 0
+                    self._update_area_highlight()
                 event.stop()
-            elif event.key in ("right", "down", "l", "j"):
-                self._move_area_selection(1)
+            elif event.key in ("right", "l"):
+                # Move right: SQL -> Python, others stay
+                if self._selected_area == 0:
+                    self._selected_area = 1
+                    self._update_area_highlight()
+                event.stop()
+            elif event.key in ("up", "k"):
+                # Move up: Results -> SQL (default to left editor)
+                if self._selected_area == 2:
+                    self._selected_area = 0
+                    self._update_area_highlight()
+                event.stop()
+            elif event.key in ("down", "j"):
+                # Move down: SQL/Python -> Results
+                if self._selected_area in (0, 1):
+                    self._selected_area = 2
+                    self._update_area_highlight()
                 event.stop()
             elif event.key in ("enter", "i"):
                 self._exit_area_select_mode()
@@ -1219,11 +1240,6 @@ class TrinoQApp(App):
         except Exception:
             pass
         self.query_one(StatusBar).status = "Ready"
-
-    def _move_area_selection(self, direction: int) -> None:
-        """Move area selection by direction (-1 or +1)."""
-        self._selected_area = (self._selected_area + direction) % len(self._areas)
-        self._update_area_highlight()
 
     def _update_area_highlight(self) -> None:
         """Update visual highlight for selected area."""

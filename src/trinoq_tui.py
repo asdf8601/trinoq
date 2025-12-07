@@ -500,7 +500,8 @@ class ResultsTable(DataTable):
         """Display query results in the table."""
         self.clear(columns=True)
         if columns:
-            self.add_columns(*columns)
+            # Convert column names to strings (needed for df.T which uses numeric indices)
+            self.add_columns(*[str(c) for c in columns])
         for row in rows:
             # Convert all values to strings for display
             self.add_row(*[str(v) if v is not None else "NULL" for v in row])
@@ -1175,6 +1176,15 @@ class TrinoQApp(App):
 
             # Get the resulting df (script may have modified it)
             df = exec_globals.get("df", df)
+
+            # Always reset index to include it as a column if it has meaningful data
+            # This is useful for df.T, groupby, etc.
+            try:
+                # Check if index has meaningful data (not just 0,1,2...)
+                if not (df.index.equals(pd.RangeIndex(len(df)))):
+                    df = df.reset_index()
+            except Exception:
+                pass
 
             elapsed = time.time() - start_time
 

@@ -45,7 +45,9 @@ from textual.widgets.option_list import Option
 CACHE_DIR = Path("/tmp/trinoq")
 TABLES_CACHE_FILE = CACHE_DIR / "tables_cache.json"
 QUERIES_FILE = CACHE_DIR / "saved_queries.json"
+HISTORY_FILE = CACHE_DIR / "query_history.json"
 CACHE_MAX_AGE_SECONDS = 3600  # Refresh cache if older than 1 hour
+HISTORY_MAX_ENTRIES = 100  # Keep last 100 queries in history
 
 # Key mappings for terminal
 CTRL_KEYS = {
@@ -554,6 +556,51 @@ def save_queries(queries: list[dict]) -> None:
         pass
 
 
+def load_query_history() -> list[dict]:
+    """Load query history from file."""
+    try:
+        if HISTORY_FILE.exists():
+            with open(HISTORY_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def save_query_to_history(sql: str, python_script: str | None = None) -> None:
+    """Save a successfully executed query to history.
+
+    Avoids duplicates by checking if the same SQL already exists at the top.
+    """
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        history = load_query_history()
+
+        # Create history entry
+        entry = {
+            "sql": sql,
+            "executed_at": time.time(),
+        }
+        if python_script:
+            entry["python"] = python_script
+
+        # Avoid duplicate if same SQL is at the top
+        if history and history[0].get("sql") == sql:
+            # Update timestamp and python script if present
+            history[0] = entry
+        else:
+            # Insert at the beginning
+            history.insert(0, entry)
+
+        # Keep only last N entries
+        history = history[:HISTORY_MAX_ENTRIES]
+
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+    except Exception:
+        pass
+
+
 def fuzzy_match(pattern: str, text: str) -> tuple[bool, int]:
     """Fuzzy matching - returns (matched, score). Higher score = better match."""
     pattern = pattern.lower()
@@ -582,6 +629,59 @@ def fuzzy_match(pattern: str, text: str) -> tuple[bool, int]:
     return matched, score if matched else 0
 
 
+def render_query(query: str) -> str:
+    """Render SQL query with Jinja-style template substitution.
+
+    Supports:
+    - -- @param key value (define parameter in SQL comment)
+    - {{key}} or {key} to reference parameters or environment variables
+    """
+    import re
+
+    from trinoq import extract_params
+
+    # Extract @param values from query
+    params = extract_params(query)
+
+    # First check for double braces {{key}}
+    pattern_double = r"{{([^}]+)}}"
+    matches_double = re.findall(pattern_double, query)
+
+    # Then check for single braces {key} (only if no double braces found)
+    pattern_single = r"(?<!\{){([^}]+)}(?!\})"
+    matches_single = re.findall(pattern_single, query) if not matches_double else []
+
+    if matches_double:
+        # Handle double braces {{key}}
+        fmt_values = {}
+        for k in matches_double:
+            k = k.strip()
+            # Try params first, then environment variables
+            if k in params:
+                fmt_values[k] = params[k]
+            else:
+                fmt_values[k] = os.environ.get(k, f"{{{{MISSING:{k}}}}}")
+
+        # Replace {{key}} with values
+        for key, value in fmt_values.items():
+            query = re.sub(r"{{\s*" + re.escape(key) + r"\s*}}", value, query)
+
+    elif matches_single:
+        # Handle single braces {key}
+        fmt_values = {}
+        for k in matches_single:
+            # Try params first, then environment variables
+            if k in params:
+                fmt_values[k] = params[k]
+            else:
+                fmt_values[k] = os.environ.get(k, f"{{MISSING:{k}}}")
+
+        # Use standard format for single braces
+        query = query.format(**fmt_values)
+
+    return query
+
+
 class ResultsTable(DataTable):
     """A DataTable for displaying query results with vim-style visual selection."""
 
@@ -592,7 +692,10 @@ class ResultsTable(DataTable):
         Binding("l", "cursor_right", "Right", show=False),
         Binding("v", "toggle_visual", "Visual", show=False),
         Binding("y", "yank_selection", "Yank", show=False),
-        Binding("escape", "exit_visual", "Exit", show=False),
+        Binding("escape", "exit_mode", "Exit", show=False),
+        Binding("slash", "start_search", "Search", show=False),
+        Binding("n", "next_match", "Next", show=False),
+        Binding("N", "prev_match", "Prev", show=False),
     ]
 
     def __init__(self) -> None:
@@ -602,6 +705,14 @@ class ResultsTable(DataTable):
         self._selection_start: tuple[int, int] | None = None  # (row, col)
         self._selected_cells: set[tuple[int, int]] = set()
         self._original_values: dict[tuple[int, int], str] = {}  # Store original values
+        # Search state
+        self._search_mode = False
+        self._search_query = ""
+        self._search_matches: list[tuple[int, int]] = []  # List of (row, col) matches
+        self._current_match_idx = -1
+        self._search_highlighted: dict[
+            tuple[int, int], str
+        ] = {}  # Store original values for highlights
 
     def action_toggle_visual(self) -> None:
         """Enter visual selection mode."""
@@ -617,10 +728,14 @@ class ResultsTable(DataTable):
         else:
             self._exit_visual_mode()
 
-    def action_exit_visual(self) -> None:
-        """Exit visual mode."""
+    def action_exit_mode(self) -> None:
+        """Exit visual mode or search mode."""
         if self._visual_mode:
             self._exit_visual_mode()
+        elif self._search_mode:
+            self._exit_search_mode()
+        else:
+            self._clear_search_highlights()
 
     def _exit_visual_mode(self) -> None:
         """Clear visual mode state and restore original cell values."""
@@ -790,6 +905,130 @@ class ResultsTable(DataTable):
         self.add_column("Error")
         self.add_row(str(error))
 
+    # Search methods
+    def action_start_search(self) -> None:
+        """Start search mode - show input in status bar."""
+        self._search_mode = True
+        self._search_query = ""
+        self.app.query_one("StatusBar").status = "/"
+
+    def action_next_match(self) -> None:
+        """Go to next search match."""
+        if not self._search_matches:
+            return
+        self._current_match_idx = (self._current_match_idx + 1) % len(
+            self._search_matches
+        )
+        self._goto_current_match()
+
+    def action_prev_match(self) -> None:
+        """Go to previous search match."""
+        if not self._search_matches:
+            return
+        self._current_match_idx = (self._current_match_idx - 1) % len(
+            self._search_matches
+        )
+        self._goto_current_match()
+
+    def _goto_current_match(self) -> None:
+        """Move cursor to current match and update status."""
+        if not self._search_matches or self._current_match_idx < 0:
+            return
+        row_idx, col_idx = self._search_matches[self._current_match_idx]
+        self.move_cursor(row=row_idx, column=col_idx)
+        total = len(self._search_matches)
+        current = self._current_match_idx + 1
+        self.app.query_one(
+            "StatusBar"
+        ).status = f"/{self._search_query} [{current}/{total}]"
+
+    def _perform_search(self, query: str) -> None:
+        """Search all cells for query and highlight matches."""
+        self._clear_search_highlights()
+        self._search_query = query
+        self._search_matches = []
+        self._current_match_idx = -1
+
+        if not query:
+            self.app.query_one("StatusBar").status = ""
+            return
+
+        query_lower = query.lower()
+
+        # Search all cells
+        for row_idx in range(self.row_count):
+            for col_idx in range(len(list(self.columns))):
+                try:
+                    row_key = self._row_locations.get_key(row_idx)
+                    col_key = self._column_locations.get_key(col_idx)
+                    if row_key and col_key:
+                        value = str(self.get_cell(row_key, col_key))
+                        if query_lower in value.lower():
+                            self._search_matches.append((row_idx, col_idx))
+                            # Store original and highlight
+                            if (row_idx, col_idx) not in self._search_highlighted:
+                                self._search_highlighted[(row_idx, col_idx)] = value
+                            # Highlight match with yellow background
+                            highlighted = Text(value, style="black on yellow")
+                            self.update_cell(row_key, col_key, highlighted)
+                except Exception:
+                    pass
+
+        if self._search_matches:
+            self._current_match_idx = 0
+            self._goto_current_match()
+        else:
+            self.app.query_one("StatusBar").status = f"/{query} [no matches]"
+
+    def _clear_search_highlights(self) -> None:
+        """Remove search highlights from cells."""
+        for (row_idx, col_idx), original_value in self._search_highlighted.items():
+            try:
+                row_key = self._row_locations.get_key(row_idx)
+                col_key = self._column_locations.get_key(col_idx)
+                if row_key and col_key:
+                    self.update_cell(row_key, col_key, original_value)
+            except Exception:
+                pass
+        self._search_highlighted.clear()
+        self._search_matches = []
+        self._current_match_idx = -1
+
+    def _exit_search_mode(self) -> None:
+        """Exit search input mode."""
+        self._search_mode = False
+        if self._search_query:
+            self._perform_search(self._search_query)
+        else:
+            self.app.query_one("StatusBar").status = ""
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle key events for search input."""
+        if not self._search_mode:
+            return
+
+        if event.key == "enter":
+            # Execute search
+            self._search_mode = False
+            self._perform_search(self._search_query)
+            event.stop()
+        elif event.key == "escape":
+            # Cancel search
+            self._search_mode = False
+            self._search_query = ""
+            self.app.query_one("StatusBar").status = ""
+            event.stop()
+        elif event.key == "backspace":
+            # Delete last char
+            self._search_query = self._search_query[:-1]
+            self.app.query_one("StatusBar").status = f"/{self._search_query}"
+            event.stop()
+        elif event.character and event.character.isprintable():
+            # Add character to search
+            self._search_query += event.character
+            self.app.query_one("StatusBar").status = f"/{self._search_query}"
+            event.stop()
+
 
 class SearchPopup(Container):
     """Floating search popup with input and results list."""
@@ -871,18 +1110,46 @@ class QueriesPopup(Container):
     def compose(self) -> ComposeResult:
         yield Static("Saved Queries (Enter=load, Del=delete)", id="queries-title")
         yield Input(placeholder="Filter queries...", id="queries-filter")
-        yield OptionList(id="queries-list")
+        with Horizontal(id="queries-content"):
+            yield OptionList(id="queries-list")
+            yield Static("", id="queries-preview")
 
     def on_key(self, event: events.Key) -> None:
         """Handle navigation keys."""
         if event.key == "up":
             self.query_one("#queries-list", OptionList).action_cursor_up()
+            self._update_preview()
             event.stop()
         elif event.key == "down":
             self.query_one("#queries-list", OptionList).action_cursor_down()
+            self._update_preview()
             event.stop()
         elif event.key == "enter":
             pass
+
+    def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
+        """Update preview when option is highlighted."""
+        self._update_preview()
+
+    def _update_preview(self) -> None:
+        """Update the preview panel with the selected query."""
+        results = self.query_one("#queries-list", OptionList)
+        preview = self.query_one("#queries-preview", Static)
+
+        if (
+            results.highlighted is not None
+            and results.highlighted < results.option_count
+        ):
+            option = results.get_option_at_index(results.highlighted)
+            if option and option.id:
+                query_idx = int(option.id)
+                if query_idx < len(self.queries):
+                    sql = self.queries[query_idx].get("sql", "")
+                    preview.update(sql)
+                    return
+        preview.update("")
 
     def action_cancel(self) -> None:
         self.app.action_hide_queries()
@@ -894,6 +1161,8 @@ class QueriesPopup(Container):
         """Load and display saved queries."""
         self.queries = load_saved_queries()
         self._update_list("")
+        # Update preview for first item
+        self.call_after_refresh(self._update_preview)
 
     def _update_list(self, filter_text: str) -> None:
         """Update the queries list with optional filter."""
@@ -902,12 +1171,117 @@ class QueriesPopup(Container):
 
         for i, q in enumerate(self.queries):
             name = q.get("name", f"Query {i + 1}")
-            sql_preview = q.get("sql", "")[:50].replace("\n", " ")
             if filter_text and filter_text.lower() not in name.lower():
                 continue
-            results.add_option(Option(f"{name}: {sql_preview}...", id=str(i)))
+            results.add_option(Option(name, id=str(i)))
 
         if self.queries and results.option_count > 0:
+            results.highlighted = 0
+
+
+class HistoryPopup(Container):
+    """Floating popup for query history (auto-saved successful queries)."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__(id="history-popup")
+        self.history: list[dict] = []
+
+    def compose(self) -> ComposeResult:
+        yield Static("Query History (Enter=load)", id="history-title")
+        yield Input(placeholder="Filter history...", id="history-filter")
+        with Horizontal(id="history-content"):
+            yield OptionList(id="history-list")
+            yield Static("", id="history-preview")
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle navigation keys."""
+        if event.key == "up":
+            self.query_one("#history-list", OptionList).action_cursor_up()
+            self._update_preview()
+            event.stop()
+        elif event.key == "down":
+            self.query_one("#history-list", OptionList).action_cursor_down()
+            self._update_preview()
+            event.stop()
+        elif event.key == "enter":
+            pass
+
+    def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
+        """Update preview when option is highlighted."""
+        self._update_preview()
+
+    def _update_preview(self) -> None:
+        """Update the preview panel with the selected query."""
+        results = self.query_one("#history-list", OptionList)
+        preview = self.query_one("#history-preview", Static)
+
+        if (
+            results.highlighted is not None
+            and results.highlighted < results.option_count
+        ):
+            option = results.get_option_at_index(results.highlighted)
+            if option and option.id:
+                query_idx = int(option.id)
+                if query_idx < len(self.history):
+                    entry = self.history[query_idx]
+                    sql = entry.get("sql", "")
+                    python = entry.get("python", "")
+                    if python:
+                        preview.update(f"-- SQL:\n{sql}\n\n-- Python:\n{python}")
+                    else:
+                        preview.update(sql)
+                    return
+        preview.update("")
+
+    def action_cancel(self) -> None:
+        self.app.action_hide_history()
+
+    def load_history(self) -> None:
+        """Load and display query history."""
+        self.history = load_query_history()
+        self._update_list("")
+        # Update preview for first item
+        self.call_after_refresh(self._update_preview)
+
+    def _update_list(self, filter_text: str) -> None:
+        """Update the history list with optional filter."""
+        from datetime import datetime
+
+        results = self.query_one("#history-list", OptionList)
+        results.clear_options()
+
+        for i, entry in enumerate(self.history):
+            sql = entry.get("sql", "")
+            # Create a display name from first line of SQL + timestamp
+            first_line = sql.strip().split("\n")[0][:50]
+            if len(sql.strip().split("\n")[0]) > 50:
+                first_line += "..."
+
+            # Format timestamp
+            executed_at = entry.get("executed_at", 0)
+            if executed_at:
+                dt = datetime.fromtimestamp(executed_at)
+                time_str = dt.strftime("%m/%d %H:%M")
+            else:
+                time_str = ""
+
+            display = f"{time_str} {first_line}"
+
+            # Filter matches SQL content and Python script
+            if filter_text:
+                python_script = entry.get("python", "")
+                searchable = f"{sql} {python_script}".lower()
+                if filter_text.lower() not in searchable:
+                    continue
+            results.add_option(Option(display, id=str(i)))
+
+        if self.history and results.option_count > 0:
             results.highlighted = 0
 
 
@@ -997,6 +1371,62 @@ class StatusBar(Static):
         return f" {self.status}"
 
 
+class HelpPopup(Container):
+    """Floating popup showing keybindings help."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close", show=False, priority=True),
+        Binding("q", "close", "Close", show=False, priority=True),
+    ]
+
+    HELP_TEXT = """
+[bold cyan]TrinoQ Keybindings[/]
+
+[bold yellow]Navigation[/]
+  [green]Ctrl+C[/]       Enter area selection mode
+  [green]h/j/k/l[/]      Move between areas (vim-style)
+  [green]Enter/i[/]      Select area and enter
+  [green]Esc[/]          Exit selection / close popups
+
+[bold yellow]Query Execution[/]
+  [green]F5[/]           Run query
+  [green]Ctrl+P[/]       Open command palette
+
+[bold yellow]Layout[/]
+  [green]F11[/]          Maximize/restore focused panel
+  [green]Drag splitters[/] Resize panels
+
+[bold yellow]Results Table[/]
+  [green]h/j/k/l[/]      Navigate cells
+  [green]v[/]            Enter visual selection mode
+  [green]y[/]            Yank (copy) selected cells
+  [green]/[/]            Search in results
+  [green]n[/]            Next search match
+  [green]N[/]            Previous search match
+  [green]Esc[/]          Exit visual/search mode
+
+[bold yellow]SQL Templates[/]
+  [dim]-- @param key value[/]   Define a parameter
+  [dim]{{key}}[/]               Use parameter or env var
+
+[bold yellow]Commands (Ctrl+P)[/]
+  Run Query, Save Query, Open Queries
+  Clear Results, Search Tables, Toggle Cache, Quit
+
+[bold yellow]Caching[/]
+  Results are cached to [dim]/tmp/trinoq/[/]
+  Use [green]Toggle Cache[/] in command palette to disable
+
+[dim]Press Esc or q to close[/]
+"""
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.HELP_TEXT, id="help-content")
+
+    def action_close(self) -> None:
+        self.app.action_hide_help()
+
+
 class TrinoQCommands(Provider):
     """Command provider for TrinoQ."""
 
@@ -1006,12 +1436,23 @@ class TrinoQCommands(Provider):
             ("Run Query", self.app.action_execute_query, "Execute current SQL query"),
             ("Save Query", self.app.action_save_query, "Save current query"),
             ("Open Queries", self.app.action_show_queries, "Open saved queries"),
+            (
+                "Query History",
+                self.app.action_show_history,
+                "Browse executed query history",
+            ),
             ("Clear Results", self.app.action_clear_results, "Clear results table"),
             (
                 "Toggle Maximize",
                 self.app.action_toggle_maximize,
                 "Maximize/restore panel",
             ),
+            (
+                "Toggle Cache",
+                self.app.action_toggle_cache,
+                "Enable/disable query result caching",
+            ),
+            ("Help", self.app.action_show_help, "Show keybindings help"),
             ("Quit", self.app.action_quit, "Quit application"),
             ("Search Tables", self.app.action_show_search, "Search database tables"),
         ]
@@ -1156,13 +1597,13 @@ class TrinoQApp(App):
     #queries-popup {
         display: none;
         layer: popup;
-        width: 70%;
-        height: auto;
-        max-height: 22;
+        width: 100%;
+        height: 1fr;
+        max-height: 100%;
         background: $surface;
-        border: round $surface-lighten-2;
+        border: none;
         padding: 1 2;
-        offset: 15% 30%;
+        dock: top;
     }
 
     #queries-popup.visible {
@@ -1183,13 +1624,82 @@ class TrinoQApp(App):
         background: $surface;
     }
 
-    #queries-list {
+    #queries-content {
         width: 100%;
-        height: auto;
-        max-height: 15;
-        border: none;
+        height: 1fr;
+    }
+
+    #queries-list {
+        width: 30%;
+        height: 100%;
+        border: round $surface-lighten-2;
         background: $surface;
         margin-top: 1;
+    }
+
+    #queries-preview {
+        width: 70%;
+        height: 100%;
+        border: round $surface-lighten-2;
+        background: $surface-darken-1;
+        margin-top: 1;
+        margin-left: 1;
+        padding: 1;
+        overflow: auto;
+    }
+
+    #history-popup {
+        display: none;
+        layer: popup;
+        width: 100%;
+        height: 1fr;
+        max-height: 100%;
+        background: $surface;
+        border: none;
+        padding: 1 2;
+        dock: top;
+    }
+
+    #history-popup.visible {
+        display: block;
+    }
+
+    #history-title {
+        width: 100%;
+        text-align: center;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    #history-filter {
+        width: 100%;
+        height: 1;
+        border: none;
+        background: $surface;
+    }
+
+    #history-content {
+        width: 100%;
+        height: 1fr;
+    }
+
+    #history-list {
+        width: 30%;
+        height: 100%;
+        border: round $surface-lighten-2;
+        background: $surface;
+        margin-top: 1;
+    }
+
+    #history-preview {
+        width: 70%;
+        height: 100%;
+        border: round $surface-lighten-2;
+        background: $surface-darken-1;
+        margin-top: 1;
+        margin-left: 1;
+        padding: 1;
+        overflow: auto;
     }
 
     #save-query-popup {
@@ -1285,6 +1795,27 @@ class TrinoQApp(App):
     .area-selected {
         border: heavy yellow !important;
     }
+
+    #help-popup {
+        display: none;
+        layer: popup;
+        width: 60%;
+        height: auto;
+        max-height: 80%;
+        background: $surface;
+        border: round $primary;
+        padding: 1 2;
+        offset: 20% 10%;
+    }
+
+    #help-popup.visible {
+        display: block;
+    }
+
+    #help-content {
+        width: 100%;
+        height: auto;
+    }
     """
 
     BINDINGS = [
@@ -1301,6 +1832,7 @@ class TrinoQApp(App):
     _selected_area: int = 0  # 0=sql, 1=python, 2=results
     _areas: list[str] = ["sql-editor", "python-editor", "results-container"]
     _areas_focus: list[str] = ["sql-editor", "python-editor", "results-table"]
+    _cache_enabled: bool = True  # Enable query result caching by default
 
     # Layout ratios for splitter resize
     _editors_ratio: float = 0.5  # 50% editors, 50% results
@@ -1332,8 +1864,10 @@ class TrinoQApp(App):
         yield StatusBar(id="status-bar")
         yield SearchPopup()
         yield QueriesPopup()
+        yield HistoryPopup()
         yield SaveQueryPopup()
         yield ExportPopup()
+        yield HelpPopup(id="help-popup")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1341,6 +1875,23 @@ class TrinoQApp(App):
         self._load_layout()
         self._apply_layout()
         self.query_one("#sql-editor", VimEditor).focus()
+
+        # Load tables cache immediately and refresh in background
+        self._load_tables_cache_on_startup()
+
+    def _load_tables_cache_on_startup(self) -> None:
+        """Load tables from cache on startup and refresh in background."""
+        popup = self.query_one(SearchPopup)
+
+        # Load from disk cache immediately
+        cached = load_tables_cache()
+        if cached:
+            popup.all_tables = cached
+            self.query_one(StatusBar).status = f"Loaded {len(cached)} tables from cache"
+
+        # Always refresh in background on startup (if cache is stale or empty)
+        if cache_needs_refresh() or not cached:
+            self._load_all_tables()
 
     def _load_layout(self) -> None:
         """Load layout ratios from config file."""
@@ -1545,19 +2096,26 @@ class TrinoQApp(App):
     @work(thread=True, exclusive=True, group="query")
     def _execute_query(self, sql: str) -> None:
         """Execute the SQL query in a background thread."""
-        import pandas as pd
+        from trinoq import execute
 
         status = self.query_one(StatusBar)
         results_table = self.query_one(ResultsTable)
 
         self.call_from_thread(setattr, status, "is_running", True)
-        self.call_from_thread(setattr, status, "status", "Running query...")
+        cache_status = "cached" if self._cache_enabled else "no cache"
+        self.call_from_thread(
+            setattr, status, "status", f"Running query ({cache_status})..."
+        )
 
         start_time = time.time()
 
         try:
+            # Render template variables ({{var}} with @param values)
+            rendered_sql = render_query(sql)
             conn = self._get_connection()
-            df = pd.read_sql(sql, conn)
+            df = execute(
+                rendered_sql, engine=conn, no_cache=not self._cache_enabled, quiet=True
+            )
             columns = df.columns.tolist()
             rows = [tuple(row) for row in df.values]
 
@@ -1574,6 +2132,9 @@ class TrinoQApp(App):
             self.call_from_thread(
                 self.notify, f"Query returned {len(rows)} rows", severity="information"
             )
+
+            # Auto-save to query history
+            save_query_to_history(sql)
 
         except Exception as e:
             self.call_from_thread(setattr, status, "is_running", False)
@@ -1592,14 +2153,21 @@ class TrinoQApp(App):
         results_table = self.query_one(ResultsTable)
 
         self.call_from_thread(setattr, status, "is_running", True)
-        self.call_from_thread(setattr, status, "status", "Running query with Python...")
+        cache_status = "cached" if self._cache_enabled else "no cache"
+        self.call_from_thread(
+            setattr, status, "status", f"Running query with Python ({cache_status})..."
+        )
 
         start_time = time.time()
 
         try:
+            # Render template variables ({{var}} with @param values)
+            rendered_sql = render_query(sql)
             # Execute the SQL query
             conn = self._get_connection()
-            df = execute(sql, engine=conn, no_cache=True, quiet=True)
+            df = execute(
+                rendered_sql, engine=conn, no_cache=not self._cache_enabled, quiet=True
+            )
 
             # Execute the Python script with df in scope
             # The script can modify df or create a new one
@@ -1637,6 +2205,9 @@ class TrinoQApp(App):
                 self.notify, f"Query returned {len(rows)} rows", severity="information"
             )
 
+            # Auto-save to query history (with Python script)
+            save_query_to_history(sql, python_script)
+
         except Exception as e:
             self.call_from_thread(setattr, status, "is_running", False)
             self.call_from_thread(results_table.display_error, str(e))
@@ -1673,6 +2244,13 @@ class TrinoQApp(App):
         results_table.clear(columns=True)
         self.query_one(StatusBar).status = "Results cleared"
 
+    def action_toggle_cache(self) -> None:
+        """Toggle query result caching."""
+        self._cache_enabled = not self._cache_enabled
+        status = "enabled" if self._cache_enabled else "disabled"
+        self.query_one(StatusBar).status = f"Cache {status}"
+        self.notify(f"Query caching {status}", severity="information")
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
         if event.button.id == "btn-copy":
@@ -1690,7 +2268,9 @@ class TrinoQApp(App):
             self.action_hide_export()
 
     def _copy_results_to_clipboard(self) -> None:
-        """Copy all results to clipboard as TSV."""
+        """Copy all results to clipboard as formatted table (df.to_string style)."""
+        import pandas as pd
+
         results_table = self.query_one(ResultsTable)
         if results_table.row_count == 0:
             self.query_one(StatusBar).status = "No results to copy"
@@ -1698,9 +2278,9 @@ class TrinoQApp(App):
 
         # Get column headers
         columns = [str(col.label) for col in results_table.columns.values()]
-        lines = ["\t".join(columns)]
 
         # Get all rows
+        rows = []
         for row_idx in range(results_table.row_count):
             row_values = []
             for col_idx in range(len(columns)):
@@ -1709,12 +2289,15 @@ class TrinoQApp(App):
                     col_key = results_table._column_locations.get_key(col_idx)
                     if row_key and col_key:
                         value = results_table.get_cell(row_key, col_key)
-                        row_values.append(str(value))
+                        row_values.append(value)
                 except Exception:
                     row_values.append("")
-            lines.append("\t".join(row_values))
+            rows.append(row_values)
 
-        text = "\n".join(lines)
+        # Create DataFrame and use to_string()
+        df = pd.DataFrame(rows, columns=columns)
+        text = df.to_string(index=False)
+
         results_table._copy_to_clipboard(text)
         self.query_one(StatusBar).status = f"Copied {results_table.row_count} rows"
 
@@ -1863,19 +2446,12 @@ class TrinoQApp(App):
         popup.matches = []
         popup.query_one("#search-input", Input).focus()
 
-        # Load from cache first (instant)
-        if not popup.all_tables:
-            cached = load_tables_cache()
-            if cached:
-                popup.all_tables = cached
-                popup.update_results(cached[:50])
-                self.query_one(
-                    StatusBar
-                ).status = f"Loaded {len(cached)} tables from cache"
-
-        # Refresh in background if cache is stale
-        if cache_needs_refresh():
-            self._load_all_tables()
+        # Show cached tables immediately (already loaded on startup)
+        if popup.all_tables:
+            popup.update_results(popup.all_tables[:50])
+            self.query_one(
+                StatusBar
+            ).status = f"{len(popup.all_tables)} tables available"
 
     def action_hide_search(self) -> None:
         """Hide the table search popup."""
@@ -1919,6 +2495,18 @@ class TrinoQApp(App):
         popup.remove_class("visible")
         self.query_one(ResultsTable).focus()
 
+    def action_show_help(self) -> None:
+        """Show the help popup with keybindings."""
+        popup = self.query_one(HelpPopup)
+        popup.add_class("visible")
+        popup.focus()
+
+    def action_hide_help(self) -> None:
+        """Hide the help popup."""
+        popup = self.query_one(HelpPopup)
+        popup.remove_class("visible")
+        self.query_one("#sql-editor", VimEditor).focus()
+
     def _do_save_query(self, name: str, sql: str) -> None:
         """Actually save the query with the given name."""
         queries = load_saved_queries()
@@ -1939,6 +2527,20 @@ class TrinoQApp(App):
     def action_hide_queries(self) -> None:
         """Hide the queries popup."""
         popup = self.query_one(QueriesPopup)
+        popup.remove_class("visible")
+        self.query_one("#sql-editor", VimEditor).focus()
+
+    def action_show_history(self) -> None:
+        """Show the query history popup."""
+        popup = self.query_one(HistoryPopup)
+        popup.add_class("visible")
+        popup.load_history()
+        popup.query_one("#history-filter", Input).value = ""
+        popup.query_one("#history-filter", Input).focus()
+
+    def action_hide_history(self) -> None:
+        """Hide the history popup."""
+        popup = self.query_one(HistoryPopup)
         popup.remove_class("visible")
         self.query_one("#sql-editor", VimEditor).focus()
 
@@ -1974,6 +2576,20 @@ class TrinoQApp(App):
                 self.notify(f"Loaded: {query.get('name', 'query')}")
             self.action_hide_queries()
 
+        elif event.option_list.id == "history-list":
+            popup = self.query_one(HistoryPopup)
+            if event.option_index < len(popup.history):
+                entry = popup.history[event.option_index]
+                sql_editor = self.query_one("#sql-editor", VimEditor)
+                sql_editor.content = entry.get("sql", "")
+                # Also load Python script if present
+                python_script = entry.get("python", "")
+                if python_script:
+                    python_editor = self.query_one("#python-editor", VimEditor)
+                    python_editor.content = python_script
+                self.notify("Loaded query from history")
+            self.action_hide_history()
+
     def on_input_changed(self, event: Input.Changed) -> None:
         """Handle input changes in popups."""
         if event.input.id == "search-input":
@@ -1999,6 +2615,10 @@ class TrinoQApp(App):
 
         elif event.input.id == "queries-filter":
             popup = self.query_one(QueriesPopup)
+            popup._update_list(event.value.strip())
+
+        elif event.input.id == "history-filter":
+            popup = self.query_one(HistoryPopup)
             popup._update_list(event.value.strip())
 
     def on_input_submitted(self, event: Input.Submitted) -> None:

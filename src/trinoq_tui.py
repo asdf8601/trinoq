@@ -887,16 +887,42 @@ class ResultsTable(DataTable):
         col_key = self._column_locations.get_key(col_idx)
         return self.get_cell(row_key, col_key)
 
-    def display_results(self, columns: list[str], rows: list[tuple]) -> None:
-        """Display query results in the table."""
+    def display_results(
+        self, columns: list[str], rows: list[tuple], max_rows: int = 10000
+    ) -> None:
+        """Display query results in the table.
+
+        Args:
+            columns: Column names
+            rows: Row data
+            max_rows: Maximum rows to display (default 10000) to prevent UI blocking
+        """
         self._exit_visual_mode() if self._visual_mode else None
         self.clear(columns=True)
+
         if columns:
             # Convert column names to strings (needed for df.T which uses numeric indices)
             self.add_columns(*[str(c) for c in columns])
-        for row in rows:
-            # Convert all values to strings for display
-            self.add_row(*[str(v) if v is not None else "NULL" for v in row])
+
+        # Limit rows to prevent UI blocking
+        display_rows = rows[:max_rows]
+        truncated = len(rows) > max_rows
+
+        # Convert all values to strings and add all rows at once (more efficient)
+        str_rows = [
+            tuple(str(v) if v is not None else "NULL" for v in row)
+            for row in display_rows
+        ]
+        self.add_rows(str_rows)
+
+        if truncated:
+            # Add indicator row showing truncation
+            self.add_row(
+                *[
+                    f"... ({len(rows) - max_rows} more rows)" if i == 0 else ""
+                    for i in range(len(columns))
+                ]
+            )
 
     def display_error(self, error: str) -> None:
         """Display an error message in the table."""
@@ -1125,7 +1151,24 @@ class QueriesPopup(Container):
             self._update_preview()
             event.stop()
         elif event.key == "enter":
-            pass
+            # Load the selected query directly
+            self._load_selected()
+            event.stop()
+
+    def _load_selected(self) -> None:
+        """Load the currently highlighted query into editor."""
+        results = self.query_one("#queries-list", OptionList)
+        if results.highlighted is None:
+            return
+        option = results.get_option_at_index(results.highlighted)
+        if option and option.id:
+            query_idx = int(option.id)
+            if query_idx < len(self.queries):
+                query = self.queries[query_idx]
+                sql_editor = self.app.query_one("#sql-editor")
+                sql_editor.content = query.get("sql", "")
+                self.app.notify(f"Loaded: {query.get('name', 'query')}")
+        self.app.action_hide_queries()
 
     def on_option_list_option_highlighted(
         self, event: OptionList.OptionHighlighted
@@ -1208,7 +1251,29 @@ class HistoryPopup(Container):
             self._update_preview()
             event.stop()
         elif event.key == "enter":
-            pass
+            # Load the selected query directly
+            self._load_selected()
+            event.stop()
+
+    def _load_selected(self) -> None:
+        """Load the currently highlighted query into editors."""
+        results = self.query_one("#history-list", OptionList)
+        if results.highlighted is None:
+            return
+        option = results.get_option_at_index(results.highlighted)
+        if option and option.id:
+            history_idx = int(option.id)
+            if history_idx < len(self.history):
+                entry = self.history[history_idx]
+                sql_editor = self.app.query_one("#sql-editor")
+                sql_editor.content = entry.get("sql", "")
+                # Also load Python script if present
+                python_script = entry.get("python", "")
+                if python_script:
+                    python_editor = self.app.query_one("#python-editor")
+                    python_editor.content = python_script
+                self.app.notify("Loaded query from history")
+        self.app.action_hide_history()
 
     def on_option_list_option_highlighted(
         self, event: OptionList.OptionHighlighted
@@ -1828,6 +1893,10 @@ class TrinoQApp(App):
 
     _maximized_panel: str | None = None  # Track which panel is maximized
     _connection: Any = None
+    _connection_created_at: float = 0  # Timestamp when connection was created
+    _connection_max_age: int = (
+        55 * 60
+    )  # Refresh token after 55 minutes (before 1hr expiry)
     _area_select_mode: bool = False  # Area selection mode
     _selected_area: int = 0  # 0=sql, 1=python, 2=results
     _areas: list[str] = ["sql-editor", "python-editor", "results-container"]
@@ -2086,11 +2155,17 @@ class TrinoQApp(App):
                 pass
 
     def _get_connection(self) -> Any:
-        """Get or create a Trino connection."""
-        if self._connection is None:
-            from trinoq import create_connection
+        """Get or create a Trino connection. Refreshes token if older than 55 minutes."""
+        from trinoq import create_connection
 
+        current_time = time.time()
+        connection_age = current_time - self._connection_created_at
+
+        # Create new connection if none exists or token is about to expire
+        if self._connection is None or connection_age > self._connection_max_age:
             self._connection = create_connection()
+            self._connection_created_at = current_time
+
         return self._connection
 
     @work(thread=True, exclusive=True, group="query")
@@ -2569,25 +2644,31 @@ class TrinoQApp(App):
 
         elif event.option_list.id == "queries-list":
             popup = self.query_one(QueriesPopup)
-            if event.option_index < len(popup.queries):
-                query = popup.queries[event.option_index]
-                editor = self.query_one("#sql-editor", VimEditor)
-                editor.content = query.get("sql", "")
-                self.notify(f"Loaded: {query.get('name', 'query')}")
+            # Use option.id (the real index) not option_index (filtered list position)
+            if event.option and event.option.id:
+                query_idx = int(event.option.id)
+                if query_idx < len(popup.queries):
+                    query = popup.queries[query_idx]
+                    editor = self.query_one("#sql-editor", VimEditor)
+                    editor.content = query.get("sql", "")
+                    self.notify(f"Loaded: {query.get('name', 'query')}")
             self.action_hide_queries()
 
         elif event.option_list.id == "history-list":
             popup = self.query_one(HistoryPopup)
-            if event.option_index < len(popup.history):
-                entry = popup.history[event.option_index]
-                sql_editor = self.query_one("#sql-editor", VimEditor)
-                sql_editor.content = entry.get("sql", "")
-                # Also load Python script if present
-                python_script = entry.get("python", "")
-                if python_script:
-                    python_editor = self.query_one("#python-editor", VimEditor)
-                    python_editor.content = python_script
-                self.notify("Loaded query from history")
+            # Use option.id (the real index) not option_index (filtered list position)
+            if event.option and event.option.id:
+                history_idx = int(event.option.id)
+                if history_idx < len(popup.history):
+                    entry = popup.history[history_idx]
+                    sql_editor = self.query_one("#sql-editor", VimEditor)
+                    sql_editor.content = entry.get("sql", "")
+                    # Also load Python script if present
+                    python_script = entry.get("python", "")
+                    if python_script:
+                        python_editor = self.query_one("#python-editor", VimEditor)
+                        python_editor.content = python_script
+                    self.notify("Loaded query from history")
             self.action_hide_history()
 
     def on_input_changed(self, event: Input.Changed) -> None:

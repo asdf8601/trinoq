@@ -724,6 +724,7 @@ class ResultsTable(DataTable):
             self._visual_mode = True
             self._visual_line_mode = False
             self._visual_block_mode = False
+            self.cursor_type = "none"  # Hide native cursor
             row_idx = self.cursor_row
             col_idx = self.cursor_column
             self._selection_start = (row_idx, col_idx)
@@ -740,6 +741,7 @@ class ResultsTable(DataTable):
             self._visual_mode = True
             self._visual_line_mode = True
             self._visual_block_mode = False
+            self.cursor_type = "none"  # Hide native cursor
             row_idx = self.cursor_row
             col_idx = self.cursor_column
             self._selection_start = (row_idx, col_idx)
@@ -756,6 +758,7 @@ class ResultsTable(DataTable):
             self._visual_mode = True
             self._visual_line_mode = False
             self._visual_block_mode = True
+            self.cursor_type = "none"  # Hide native cursor
             row_idx = self.cursor_row
             col_idx = self.cursor_column
             self._selection_start = (row_idx, col_idx)
@@ -794,6 +797,7 @@ class ResultsTable(DataTable):
         self._selection_start = None
         self._selected_cells.clear()
         self._original_values.clear()
+        self.cursor_type = "cell"  # Restore native cursor
         self.refresh()
         self.app.query_one("StatusBar").status = ""
 
@@ -841,6 +845,7 @@ class ResultsTable(DataTable):
                     pass
 
         # Highlight new cells
+        cursor_pos = (self.cursor_row, self.cursor_column)
         for coord in new_selected - old_selected:
             try:
                 row_key = self._row_locations.get_key(coord[0])
@@ -850,11 +855,44 @@ class ResultsTable(DataTable):
                     # Store original value
                     if coord not in self._original_values:
                         self._original_values[coord] = str(value)
-                    # Apply highlight using same blue as cursor selection
+                    # Use brighter style for cursor position, dimmer for rest of selection
+                    if coord == cursor_pos:
+                        highlighted = Text(str(value), style="bold white on blue")
+                    else:
+                        highlighted = Text(str(value), style="white on dark_blue")
+                    self.update_cell(row_key, col_key, highlighted)
+            except Exception:
+                pass
+
+        # Update cursor cell style (may have moved within selection)
+        old_cursor = getattr(self, "_last_cursor_pos", None)
+        if (
+            old_cursor
+            and old_cursor in self._selected_cells
+            and old_cursor != cursor_pos
+        ):
+            # Restore old cursor to normal selection style
+            try:
+                row_key = self._row_locations.get_key(old_cursor[0])
+                col_key = self._column_locations.get_key(old_cursor[1])
+                if row_key and col_key:
+                    value = self._original_values.get(old_cursor, "")
                     highlighted = Text(str(value), style="white on dark_blue")
                     self.update_cell(row_key, col_key, highlighted)
             except Exception:
                 pass
+        if cursor_pos in self._selected_cells:
+            # Highlight new cursor position
+            try:
+                row_key = self._row_locations.get_key(cursor_pos[0])
+                col_key = self._column_locations.get_key(cursor_pos[1])
+                if row_key and col_key:
+                    value = self._original_values.get(cursor_pos, "")
+                    highlighted = Text(str(value), style="bold white on blue")
+                    self.update_cell(row_key, col_key, highlighted)
+            except Exception:
+                pass
+        self._last_cursor_pos = cursor_pos
 
         self._selected_cells = new_selected
         self.refresh()

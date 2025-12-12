@@ -1476,7 +1476,8 @@ class HelpPopup(Container):
 
 [bold yellow]Commands (Ctrl+P)[/]
   Run Query, Save Query, Open Queries
-  Clear Results, Search Tables, Toggle Cache, Quit
+  Clear Results, Search Tables, Toggle Cache
+  Toggle Python Panel, Quit
 
 [bold yellow]Caching[/]
   Results are cached to [dim]/tmp/trinoq/[/]
@@ -1516,6 +1517,11 @@ class TrinoQCommands(Provider):
                 "Toggle Cache",
                 self.app.action_toggle_cache,
                 "Enable/disable query result caching",
+            ),
+            (
+                "Toggle Python Panel",
+                self.app.action_toggle_python_panel,
+                "Show/hide Python editor panel",
             ),
             ("Help", self.app.action_show_help, "Show keybindings help"),
             ("Quit", self.app.action_quit, "Quit application"),
@@ -1902,6 +1908,7 @@ class TrinoQApp(App):
     _areas: list[str] = ["sql-editor", "python-editor", "results-container"]
     _areas_focus: list[str] = ["sql-editor", "python-editor", "results-table"]
     _cache_enabled: bool = True  # Enable query result caching by default
+    _python_panel_visible: bool = False  # Python panel hidden by default
 
     # Layout ratios for splitter resize
     _editors_ratio: float = 0.5  # 50% editors, 50% results
@@ -1943,6 +1950,13 @@ class TrinoQApp(App):
         """Called when the app is mounted."""
         self._load_layout()
         self._apply_layout()
+
+        # Hide Python panel by default
+        if not self._python_panel_visible:
+            self.query_one("#python-editor").add_class("hidden")
+            self.query_one("#vertical-splitter").add_class("hidden")
+            self.query_one("#sql-editor").styles.width = "100%"
+
         self.query_one("#sql-editor", VimEditor).focus()
 
         # Load tables cache immediately and refresh in background
@@ -2054,23 +2068,26 @@ class TrinoQApp(App):
 
         # Handle navigation in area selection mode (positional)
         if self._area_select_mode:
-            # Layout:
+            # Layout when Python visible:
             # [0: SQL] [1: Python]
             # [2: Results        ]
+            # Layout when Python hidden:
+            # [0: SQL]
+            # [2: Results]
             if event.key in ("left", "h"):
-                # Move left: Python -> SQL, others stay
-                if self._selected_area == 1:
+                # Move left: Python -> SQL (only if Python visible)
+                if self._python_panel_visible and self._selected_area == 1:
                     self._selected_area = 0
                     self._update_area_highlight()
                 event.stop()
             elif event.key in ("right", "l"):
-                # Move right: SQL -> Python, others stay
-                if self._selected_area == 0:
+                # Move right: SQL -> Python (only if Python visible)
+                if self._python_panel_visible and self._selected_area == 0:
                     self._selected_area = 1
                     self._update_area_highlight()
                 event.stop()
             elif event.key in ("up", "k"):
-                # Move up: Results -> SQL (default to left editor)
+                # Move up: Results -> SQL
                 if self._selected_area == 2:
                     self._selected_area = 0
                     self._update_area_highlight()
@@ -2325,6 +2342,26 @@ class TrinoQApp(App):
         status = "enabled" if self._cache_enabled else "disabled"
         self.query_one(StatusBar).status = f"Cache {status}"
         self.notify(f"Query caching {status}", severity="information")
+
+    def action_toggle_python_panel(self) -> None:
+        """Toggle Python editor panel visibility."""
+        self._python_panel_visible = not self._python_panel_visible
+        python_editor = self.query_one("#python-editor")
+        v_splitter = self.query_one("#vertical-splitter")
+        sql_editor = self.query_one("#sql-editor")
+
+        if self._python_panel_visible:
+            python_editor.remove_class("hidden")
+            v_splitter.remove_class("hidden")
+            self._apply_layout()
+            self.query_one(StatusBar).status = "Python panel shown"
+            self.notify("Python panel visible", severity="information")
+        else:
+            python_editor.add_class("hidden")
+            v_splitter.add_class("hidden")
+            sql_editor.styles.width = "100%"
+            self.query_one(StatusBar).status = "Python panel hidden"
+            self.notify("Python panel hidden", severity="information")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""

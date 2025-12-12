@@ -724,7 +724,6 @@ class ResultsTable(DataTable):
             self._visual_mode = True
             self._visual_line_mode = False
             self._visual_block_mode = False
-            self.cursor_type = "none"  # Hide native cursor
             row_idx = self.cursor_row
             col_idx = self.cursor_column
             self._selection_start = (row_idx, col_idx)
@@ -741,7 +740,6 @@ class ResultsTable(DataTable):
             self._visual_mode = True
             self._visual_line_mode = True
             self._visual_block_mode = False
-            self.cursor_type = "none"  # Hide native cursor
             row_idx = self.cursor_row
             col_idx = self.cursor_column
             self._selection_start = (row_idx, col_idx)
@@ -758,7 +756,6 @@ class ResultsTable(DataTable):
             self._visual_mode = True
             self._visual_line_mode = False
             self._visual_block_mode = True
-            self.cursor_type = "none"  # Hide native cursor
             row_idx = self.cursor_row
             col_idx = self.cursor_column
             self._selection_start = (row_idx, col_idx)
@@ -797,7 +794,6 @@ class ResultsTable(DataTable):
         self._selection_start = None
         self._selected_cells.clear()
         self._original_values.clear()
-        self.cursor_type = "cell"  # Restore native cursor
         self.refresh()
         self.app.query_one("StatusBar").status = ""
 

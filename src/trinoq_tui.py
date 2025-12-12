@@ -802,9 +802,6 @@ class ResultsTable(DataTable):
         if not self._visual_mode or self._selection_start is None:
             return
 
-        # First restore any previously highlighted cells that are no longer selected
-        old_selected = self._selected_cells.copy()
-
         start_row, start_col = self._selection_start
         end_row, end_col = self.cursor_row, self.cursor_column
 
@@ -829,29 +826,31 @@ class ResultsTable(DataTable):
             for c in range(min_col, max_col + 1)
         }
 
-        # Restore cells that are no longer selected
-        for coord in old_selected - new_selected:
-            if coord in self._original_values:
-                try:
-                    row_key = self._row_locations.get_key(coord[0])
-                    col_key = self._column_locations.get_key(coord[1])
-                    if row_key and col_key:
-                        self.update_cell(row_key, col_key, self._original_values[coord])
-                except Exception:
-                    pass
-
-        # Highlight new cells
         cursor_pos = (self.cursor_row, self.cursor_column)
-        for coord in new_selected - old_selected:
+
+        # Restore ALL previously highlighted cells first
+        for coord, original_value in list(self._original_values.items()):
+            try:
+                row_key = self._row_locations.get_key(coord[0])
+                col_key = self._column_locations.get_key(coord[1])
+                if row_key and col_key:
+                    self.update_cell(row_key, col_key, original_value)
+            except Exception:
+                pass
+
+        # Clear and rebuild original values for new selection
+        self._original_values.clear()
+
+        # Highlight all cells in new selection
+        for coord in new_selected:
             try:
                 row_key = self._row_locations.get_key(coord[0])
                 col_key = self._column_locations.get_key(coord[1])
                 if row_key and col_key:
                     value = self.get_cell(row_key, col_key)
                     # Store original value
-                    if coord not in self._original_values:
-                        self._original_values[coord] = str(value)
-                    # Use brighter style for cursor position, dimmer for rest of selection
+                    self._original_values[coord] = str(value)
+                    # Use brighter style for cursor position
                     if coord == cursor_pos:
                         highlighted = Text(str(value), style="bold black on cyan")
                     else:
@@ -859,36 +858,6 @@ class ResultsTable(DataTable):
                     self.update_cell(row_key, col_key, highlighted)
             except Exception:
                 pass
-
-        # Update cursor cell style (may have moved within selection)
-        old_cursor = getattr(self, "_last_cursor_pos", None)
-        if (
-            old_cursor
-            and old_cursor in self._selected_cells
-            and old_cursor != cursor_pos
-        ):
-            # Restore old cursor to normal selection style
-            try:
-                row_key = self._row_locations.get_key(old_cursor[0])
-                col_key = self._column_locations.get_key(old_cursor[1])
-                if row_key and col_key:
-                    value = self._original_values.get(old_cursor, "")
-                    highlighted = Text(str(value), style="black on dark_cyan")
-                    self.update_cell(row_key, col_key, highlighted)
-            except Exception:
-                pass
-        if cursor_pos in self._selected_cells:
-            # Highlight new cursor position
-            try:
-                row_key = self._row_locations.get_key(cursor_pos[0])
-                col_key = self._column_locations.get_key(cursor_pos[1])
-                if row_key and col_key:
-                    value = self._original_values.get(cursor_pos, "")
-                    highlighted = Text(str(value), style="bold black on cyan")
-                    self.update_cell(row_key, col_key, highlighted)
-            except Exception:
-                pass
-        self._last_cursor_pos = cursor_pos
 
         self._selected_cells = new_selected
         self.refresh()

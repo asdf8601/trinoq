@@ -691,6 +691,8 @@ class ResultsTable(DataTable):
         Binding("h", "cursor_left", "Left", show=False),
         Binding("l", "cursor_right", "Right", show=False),
         Binding("v", "toggle_visual", "Visual", show=False),
+        Binding("V", "toggle_visual_line", "Visual Line", show=False),
+        Binding("ctrl+v", "toggle_visual_block", "Visual Block", show=False),
         Binding("y", "yank_selection", "Yank", show=False),
         Binding("escape", "exit_mode", "Exit", show=False),
         Binding("slash", "start_search", "Search", show=False),
@@ -702,6 +704,8 @@ class ResultsTable(DataTable):
         super().__init__(id="results-table", zebra_stripes=True)
         self.cursor_type = "cell"
         self._visual_mode = False
+        self._visual_line_mode = False  # V: select entire rows
+        self._visual_block_mode = False  # Ctrl+V: select entire columns
         self._selection_start: tuple[int, int] | None = None  # (row, col)
         self._selected_cells: set[tuple[int, int]] = set()
         self._original_values: dict[tuple[int, int], str] = {}  # Store original values
@@ -715,16 +719,52 @@ class ResultsTable(DataTable):
         ] = {}  # Store original values for highlights
 
     def action_toggle_visual(self) -> None:
-        """Enter visual selection mode."""
+        """Enter visual selection mode (cell-based)."""
         if not self._visual_mode:
             self._visual_mode = True
+            self._visual_line_mode = False
+            self._visual_block_mode = False
             row_idx = self.cursor_row
             col_idx = self.cursor_column
             self._selection_start = (row_idx, col_idx)
             self._update_selection()
             self.app.query_one(
                 "StatusBar"
-            ).status = "-- VISUAL -- (hjkl to select, y to copy, Esc to cancel)"
+            ).status = "-- VISUAL -- (hjkl to extend, y to copy, Esc to cancel)"
+        else:
+            self._exit_visual_mode()
+
+    def action_toggle_visual_line(self) -> None:
+        """Enter visual line mode (select entire rows)."""
+        if not self._visual_mode:
+            self._visual_mode = True
+            self._visual_line_mode = True
+            self._visual_block_mode = False
+            row_idx = self.cursor_row
+            col_idx = self.cursor_column
+            self._selection_start = (row_idx, col_idx)
+            self._update_selection()
+            self.app.query_one(
+                "StatusBar"
+            ).status = "-- VISUAL LINE -- (jk to extend rows, y to copy, Esc to cancel)"
+        else:
+            self._exit_visual_mode()
+
+    def action_toggle_visual_block(self) -> None:
+        """Enter visual block mode (select entire columns)."""
+        if not self._visual_mode:
+            self._visual_mode = True
+            self._visual_line_mode = False
+            self._visual_block_mode = True
+            row_idx = self.cursor_row
+            col_idx = self.cursor_column
+            self._selection_start = (row_idx, col_idx)
+            self._update_selection()
+            self.app.query_one(
+                "StatusBar"
+            ).status = (
+                "-- VISUAL BLOCK -- (hl to extend cols, y to copy, Esc to cancel)"
+            )
         else:
             self._exit_visual_mode()
 
@@ -749,6 +789,8 @@ class ResultsTable(DataTable):
             except Exception:
                 pass
         self._visual_mode = False
+        self._visual_line_mode = False
+        self._visual_block_mode = False
         self._selection_start = None
         self._selected_cells.clear()
         self._original_values.clear()
@@ -756,7 +798,7 @@ class ResultsTable(DataTable):
         self.app.query_one("StatusBar").status = ""
 
     def _update_selection(self) -> None:
-        """Update selected cells based on cursor position."""
+        """Update selected cells based on cursor position and visual mode type."""
         if not self._visual_mode or self._selection_start is None:
             return
 
@@ -765,9 +807,21 @@ class ResultsTable(DataTable):
 
         start_row, start_col = self._selection_start
         end_row, end_col = self.cursor_row, self.cursor_column
-        # Get range bounds
+
+        # Get range bounds based on visual mode type
         min_row, max_row = min(start_row, end_row), max(start_row, end_row)
         min_col, max_col = min(start_col, end_col), max(start_col, end_col)
+
+        num_columns = len(list(self.columns))
+        num_rows = self.row_count
+
+        if self._visual_line_mode:
+            # V: Select entire rows from start_row to end_row
+            min_col, max_col = 0, num_columns - 1
+        elif self._visual_block_mode:
+            # Ctrl+V: Select entire columns from start_col to end_col
+            min_row, max_row = 0, num_rows - 1
+
         # Build new selection set
         new_selected = {
             (r, c)
@@ -1463,11 +1517,12 @@ class HelpPopup(Container):
 
 [bold yellow]Results Table[/]
   [green]h/j/k/l[/]      Navigate cells
-  [green]v[/]            Enter visual selection mode
-  [green]y[/]            Yank (copy) selected cells
+  [green]v[/]            Visual mode (cells)
+  [green]V[/]            Visual Line mode (entire rows)
+  [green]Ctrl+V[/]       Visual Block mode (entire columns)
+  [green]y[/]            Yank (copy) selection
   [green]/[/]            Search in results
-  [green]n[/]            Next search match
-  [green]N[/]            Previous search match
+  [green]n/N[/]          Next/Previous search match
   [green]Esc[/]          Exit visual/search mode
 
 [bold yellow]SQL Templates[/]

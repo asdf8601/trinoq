@@ -850,8 +850,8 @@ class ResultsTable(DataTable):
                     # Store original value
                     if coord not in self._original_values:
                         self._original_values[coord] = str(value)
-                    # Apply highlight using Rich Text
-                    highlighted = Text(str(value), style="reverse")
+                    # Apply highlight using same blue as cursor selection
+                    highlighted = Text(str(value), style="white on dark_blue")
                     self.update_cell(row_key, col_key, highlighted)
             except Exception:
                 pass

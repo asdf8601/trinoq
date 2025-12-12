@@ -853,9 +853,9 @@ class ResultsTable(DataTable):
                         self._original_values[coord] = str(value)
                     # Use brighter style for cursor position, dimmer for rest of selection
                     if coord == cursor_pos:
-                        highlighted = Text(str(value), style="bold white on blue")
+                        highlighted = Text(str(value), style="bold black on cyan")
                     else:
-                        highlighted = Text(str(value), style="white on dark_blue")
+                        highlighted = Text(str(value), style="black on dark_cyan")
                     self.update_cell(row_key, col_key, highlighted)
             except Exception:
                 pass
@@ -873,7 +873,7 @@ class ResultsTable(DataTable):
                 col_key = self._column_locations.get_key(old_cursor[1])
                 if row_key and col_key:
                     value = self._original_values.get(old_cursor, "")
-                    highlighted = Text(str(value), style="white on dark_blue")
+                    highlighted = Text(str(value), style="black on dark_cyan")
                     self.update_cell(row_key, col_key, highlighted)
             except Exception:
                 pass
@@ -884,7 +884,7 @@ class ResultsTable(DataTable):
                 col_key = self._column_locations.get_key(cursor_pos[1])
                 if row_key and col_key:
                     value = self._original_values.get(cursor_pos, "")
-                    highlighted = Text(str(value), style="bold white on blue")
+                    highlighted = Text(str(value), style="bold black on cyan")
                     self.update_cell(row_key, col_key, highlighted)
             except Exception:
                 pass

@@ -2072,11 +2072,14 @@ class TrinoQApp(App):
             editors_row.styles.height = f"{int(self._editors_ratio * 100)}%"
             results.styles.height = f"{int((1 - self._editors_ratio) * 100)}%"
 
-            # Apply SQL vs Python ratio
+            # Apply SQL vs Python ratio only if Python panel is visible
             sql_editor = self.query_one("#sql-editor")
             python_editor = self.query_one("#python-editor")
-            sql_editor.styles.width = f"{int(self._sql_ratio * 100)}%"
-            python_editor.styles.width = f"{int((1 - self._sql_ratio) * 100)}%"
+            if self._python_panel_visible:
+                sql_editor.styles.width = f"{int(self._sql_ratio * 100)}%"
+                python_editor.styles.width = f"{int((1 - self._sql_ratio) * 100)}%"
+            else:
+                sql_editor.styles.width = "100%"
         except Exception:
             pass
 

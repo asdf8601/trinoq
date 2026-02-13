@@ -232,6 +232,7 @@ def get_args():
       trinoq --dry-run -f query.sql            # Preview rendered query
       trinoq -t -o json "SELECT * FROM table"  # Time and export to JSON
       trinoq --noti "SELECT * FROM big_table"  # Send notification when query completes
+      trinoq --compact "SELECT 1"               # Only print data and cache messages
     """)
 
     parser = argparse.ArgumentParser(
@@ -293,6 +294,12 @@ def get_args():
     parser.add_argument(
         "--noti",
         help="Send notification when query completes (requires 'noti' package)",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-c",
+        "--compact",
+        help="Only print the data and cache messages (no labels)",
         action="store_true",
     )
     return parser.parse_args()
@@ -365,7 +372,10 @@ def app():
 
     args = get_args()
     query = get_query(args)
-    quiet = args.quiet
+    # quiet suppresses all output including cache messages
+    # compact suppresses labels but shows data and cache messages
+    quiet = args.quiet or args.compact
+    cache_quiet = args.quiet  # cache messages shown unless fully quiet
 
     if args.pdb:
         breakpoint()
@@ -394,7 +404,7 @@ def app():
     start_time = time.time()
 
     try:
-        df = execute(query=query, no_cache=args.no_cache, quiet=quiet)
+        df = execute(query=query, no_cache=args.no_cache, quiet=cache_quiet)
 
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
@@ -420,6 +430,9 @@ def app():
                 output_file = "output.parquet"
                 df.to_parquet(output_file, engine="pyarrow")
                 printer(f"\nSaved to: {output_file}", quiet=False)
+        elif args.compact:
+            # Compact mode: print only the data (no labels)
+            print(df.to_string())
         else:
             printer(f"\nOut[df]:\n{df.to_string()}", quiet=quiet)
 

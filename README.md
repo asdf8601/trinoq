@@ -18,8 +18,32 @@ A convenient CLI tool to query data from Trino with built-in caching and Google 
 
 ## Installation
 
+Install as persistent tool:
+
+```bash
+uv tool install trinoq
+```
+
+Or install from source:
+
 ```bash
 uv tool install git+https://github.com/mmngreco/trinoq
+```
+
+### Run without installing (uvx)
+
+Run directly via `uvx` without installing:
+
+```bash
+uvx trinoq "select 1"
+uvx trinoq -f query.sql
+```
+
+Pin a specific version:
+
+```bash
+uvx trinoq@latest "select 1"
+uvx --from trinoq==0.1.0 trinoq "select 1"
 ```
 
 ## Configuration
